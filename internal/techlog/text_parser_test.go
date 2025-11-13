@@ -2,6 +2,8 @@ package techlog
 
 import (
 	"testing"
+	
+	"github.com/1c-log-checker/internal/domain"
 )
 
 func TestParseTextLine_PlainFormat(t *testing.T) {
@@ -16,7 +18,7 @@ func TestParseTextLine_PlainFormat(t *testing.T) {
 			line: "2023-08-01T15:01:45.259000-14998,SCALL,0,level=INFO,process=1cv8c,OSThread=2732,ClientID=8",
 			wantErr: false,
 			checks: func(t *testing.T, r interface{}) {
-				record := r.(*TechLogRecord)
+				record := r.(*domain.TechLogRecord)
 				if record.Name != "SCALL" {
 					t.Errorf("expected Name=SCALL, got %s", record.Name)
 				}
@@ -68,7 +70,7 @@ func TestParseTextLine_HierarchicalFormat(t *testing.T) {
 			line: "45:31.831006-1,SCALL,2,level=INFO,process=1cv8,OSThread=13476,ClientID=1",
 			wantErr: false,
 			checks: func(t *testing.T, r interface{}) {
-				record := r.(*TechLogRecord)
+				record := r.(*domain.TechLogRecord)
 				if record.Name != "SCALL" {
 					t.Errorf("expected Name=SCALL, got %s", record.Name)
 				}
@@ -107,7 +109,7 @@ func TestParseProperties(t *testing.T) {
 			props: "level=INFO,process=1cv8,OSThread=1234",
 			wantErr: false,
 			checks: func(t *testing.T, r interface{}) {
-				record := r.(*TechLogRecord)
+				record := r.(*domain.TechLogRecord)
 				if record.Level != "INFO" {
 					t.Errorf("expected Level=INFO, got %s", record.Level)
 				}
@@ -121,7 +123,7 @@ func TestParseProperties(t *testing.T) {
 			props: "level=INFO,Txt='Hello, world',process=1cv8",
 			wantErr: false,
 			checks: func(t *testing.T, r interface{}) {
-				record := r.(*TechLogRecord)
+				record := r.(*domain.TechLogRecord)
 				if record.Properties["Txt"] != "Hello, world" {
 					t.Errorf("expected Txt='Hello, world', got %s", record.Properties["Txt"])
 				}
@@ -131,9 +133,9 @@ func TestParseProperties(t *testing.T) {
 	
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			record := &TechLogRecord{
-				Properties: make(map[string]string),
-			}
+		record := &domain.TechLogRecord{
+			Properties: make(map[string]string),
+		}
 			
 			err := parseProperties(tt.props, record)
 			

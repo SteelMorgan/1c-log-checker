@@ -86,6 +86,8 @@ func (w *ClickHouseWriter) flushEventLog(ctx context.Context) error {
 	}
 	
 	for _, record := range w.eventLogBatch {
+		propKeys, propVals := mapToArrays(record.Properties)
+		
 		err := batch.Append(
 			record.EventTime,
 			record.ClusterGUID,
@@ -113,7 +115,8 @@ func (w *ClickHouseWriter) flushEventLog(ctx context.Context) error {
 			record.Server,
 			record.PrimaryPort,
 			record.SecondaryPort,
-			mapToArrays(record.Properties),
+			propKeys,
+			propVals,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to append to batch: %w", err)

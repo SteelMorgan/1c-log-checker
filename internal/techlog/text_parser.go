@@ -22,7 +22,9 @@ func ParseTextLine(line string) (*domain.TechLogRecord, error) {
 	}
 	
 	// Determine format by checking for ISO timestamp
-	isPlainFormat := strings.Contains(line, "T") && strings.Contains(line[0:25], "-")
+	// Plain format: 2023-08-01T15:01:45.259000-14998,...
+	// Hierarchical: 45:31.831006-1,...
+	isPlainFormat := len(line) > 20 && strings.Contains(line[0:20], "T") && strings.Contains(line[0:10], "-")
 	
 	var remainder string
 	var err error

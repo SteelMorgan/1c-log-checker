@@ -7,6 +7,7 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/1c-log-checker/internal/config"
+	"github.com/1c-log-checker/internal/domain"
 	"github.com/1c-log-checker/internal/mapping"
 	"github.com/1c-log-checker/internal/offset"
 	"github.com/1c-log-checker/internal/techlog"

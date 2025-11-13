@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/rs/zerolog/log"
 )
 
@@ -59,7 +60,7 @@ func (c *Client) Close() error {
 }
 
 // Query executes a SELECT query and returns rows
-func (c *Client) Query(ctx context.Context, query string, args ...interface{}) (clickhouse.Rows, error) {
+func (c *Client) Query(ctx context.Context, query string, args ...interface{}) (driver.Rows, error) {
 	return c.conn.Query(ctx, query, args...)
 }
 

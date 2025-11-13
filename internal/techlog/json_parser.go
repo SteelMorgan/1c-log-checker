@@ -3,6 +3,7 @@ package techlog
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/1c-log-checker/internal/domain"
