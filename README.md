@@ -65,10 +65,20 @@
 - ✅ Dashboard: Техжурнал (duration, блокировки, DBMSSQL)
 
 ### MCP для AI-агентов
+
+**Чтение логов:**
 - ✅ `get_event_log`: получение логов журнала регистрации
 - ✅ `get_tech_log`: получение технологического журнала
 - ✅ `get_new_errors`: новые ошибки за период
-- ✅ Режимы: `minimal` (компактный) / `full` (все поля)
+
+**Настройка техжурнала:**
+- ✅ `configure_techlog`: генерация logcfg.xml
+- ✅ `disable_techlog`: отключение техжурнала
+- ✅ `get_techlog_config`: чтение текущей конфигурации
+
+**Режимы вывода:**
+- ✅ `minimal` (компактный, экономия токенов)
+- ✅ `full` (все поля для детального анализа)
 
 ---
 
@@ -256,6 +266,7 @@ WHERE error_date = today()
 - **[Чек-лист Киры](docs/specs/kiro-checklist.md)** — контроль качества процесса
 - **[Получение GUIDов](docs/guides/get-guids.md)** — как узнать GUID кластера/базы
 - **[Настройка logcfg.xml](docs/techlog/logcfg.md)** — конфигурация технологического журнала
+- **[Использование MCP tools](docs/mcp/usage.md)** — примеры запросов, режимы, best practices
 
 ---
 
@@ -297,13 +308,20 @@ docker build -f deploy/docker/Dockerfile.mcp -t 1c-log-mcp:latest .
 
 ## TODO
 
-- [ ] Поддержка чтения архивов `.lgd` (SQLite формат журнала регистрации)
+### Расширение функциональности:
+- [ ] Поддержка чтения архивов `.lgd` (SQLite формат)
 - [ ] Поддержка XML выгрузок журнала регистрации
-- [ ] MCP tool для настройки `logcfg.xml`
 - [ ] Внешняя обработка 1С для получения GUIDов
-- [ ] Prometheus метрики
+- [ ] Prometheus метрики и alerting
 - [ ] Circuit breakers для ClickHouse
-- [ ] Distributed rate limiting
+
+### Навыки и база знаний:
+- [ ] Создать навык "Технологический журнал 1С" (40+ событий, примеры, best practices)
+- [ ] Создать базу знаний "MS SQL/PostgreSQL в контексте 1С" (блокировки, RCSI, оптимизация)
+
+См. подробнее:
+- [TODO: Навык техжурнала](docs/guides/TODO_techlog_skill.md)
+- [TODO: База знаний SQL](docs/guides/TODO_sql_knowledge_base.md)
 
 ---
 

@@ -4,6 +4,7 @@ go 1.21
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.15.0
+	github.com/google/uuid v1.5.0
 	github.com/rs/zerolog v1.31.0
 	github.com/spf13/viper v1.18.2
 	go.etcd.io/bbolt v1.3.8
