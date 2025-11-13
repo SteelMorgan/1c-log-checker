@@ -10,32 +10,44 @@ import (
 )
 
 // FindIbcmd attempts to find ibcmd executable automatically
+// Returns full path to ibcmd.exe (including \bin\ibcmd.exe)
 func FindIbcmd() (string, error) {
 	// Common paths for ibcmd
 	var searchPaths []string
 	
 	if runtime.GOOS == "windows" {
 		// Windows paths
+		// Format: C:\Program Files\1cv8\<version>\bin\ibcmd.exe
 		programFiles := os.Getenv("ProgramFiles")
 		if programFiles == "" {
 			programFiles = "C:\\Program Files"
 		}
 		
-		// Try common 1C installation paths
-		searchPaths = []string{
-			filepath.Join(programFiles, "1cv8", "x86_64", "8.3.27.0", "ibcmd.exe"),
-			filepath.Join(programFiles, "1cv8", "x86_64", "8.3.26.0", "ibcmd.exe"),
-			filepath.Join(programFiles, "1cv8", "x86_64", "8.3.25.0", "ibcmd.exe"),
-			filepath.Join(programFiles, "1cv8", "x86_64", "8.3.24.0", "ibcmd.exe"),
-			filepath.Join(programFiles, "1cv8", "ibcmd.exe"),
+		// Try common 1C installation paths (version folders)
+		basePath := filepath.Join(programFiles, "1cv8")
+		versions := []string{
+			"8.3.27.1719",
+			"8.3.27.0",
+			"8.3.26.0",
+			"8.3.25.0",
+			"8.3.24.0",
+		}
+		
+		for _, version := range versions {
+			searchPaths = append(searchPaths,
+				filepath.Join(basePath, version, "bin", "ibcmd.exe"),
+			)
 		}
 		
 		// Also try Program Files (x86) for 32-bit
 		programFilesX86 := os.Getenv("ProgramFiles(x86)")
 		if programFilesX86 != "" {
-			searchPaths = append(searchPaths,
-				filepath.Join(programFilesX86, "1cv8", "ibcmd.exe"),
-			)
+			basePathX86 := filepath.Join(programFilesX86, "1cv8")
+			for _, version := range versions {
+				searchPaths = append(searchPaths,
+					filepath.Join(basePathX86, version, "bin", "ibcmd.exe"),
+				)
+			}
 		}
 	} else {
 		// Linux paths

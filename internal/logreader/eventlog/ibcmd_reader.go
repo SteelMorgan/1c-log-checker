@@ -36,7 +36,13 @@ type IbcmdReader struct {
 }
 
 // NewIbcmdReader creates a new ibcmd-based reader
+// ibcmdPath should be path to version folder (e.g., C:\Program Files\1cv8\8.3.27.1719)
+// The function will append \bin\ibcmd.exe automatically
 func NewIbcmdReader(ibcmdPath, eventLogDir, clusterGUID, infobaseGUID string) (*IbcmdReader, error) {
+	// Append \bin\ibcmd.exe to the path if it's a version folder
+	if !strings.HasSuffix(strings.ToLower(ibcmdPath), "ibcmd.exe") {
+		ibcmdPath = filepath.Join(ibcmdPath, "bin", "ibcmd.exe")
+	}
 	// Extract infobase GUID from path if not provided
 	if infobaseGUID == "" {
 		normalized := filepath.Clean(eventLogDir)

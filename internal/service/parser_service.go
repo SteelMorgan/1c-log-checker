@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -254,11 +255,14 @@ func (s *ParserService) createIbcmdReader(location logreader.LogLocation) (logre
 		if err != nil {
 			return nil, fmt.Errorf("ibcmd not found: %w", err)
 		}
-		log.Info().Str("ibcmd_path", ibcmdPath).Msg("Auto-detected ibcmd path")
+		// FindIbcmd returns full path, extract version folder
+		ibcmdPath = filepath.Dir(filepath.Dir(ibcmdPath)) // Remove \bin\ibcmd.exe
+		log.Info().Str("ibcmd_path", ibcmdPath).Msg("Auto-detected ibcmd version folder")
 	}
 	
-	// Verify ibcmd
-	if err := eventlog.VerifyIbcmd(ibcmdPath); err != nil {
+	// Verify ibcmd (add \bin\ibcmd.exe for verification)
+	fullPath := filepath.Join(ibcmdPath, "bin", "ibcmd.exe")
+	if err := eventlog.VerifyIbcmd(fullPath); err != nil {
 		return nil, fmt.Errorf("ibcmd verification failed: %w", err)
 	}
 	
