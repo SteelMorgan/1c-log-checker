@@ -1,0 +1,65 @@
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+/cmd/parser/parser
+/cmd/mcp/mcp
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Dependency directories
+vendor/
+
+# Go workspace file
+go.work
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment files
+.env
+.env.local
+*.env
+
+# Secrets
+.secrets/
+*.key
+*.pem
+
+# Docker volumes data
+/deploy/docker/volumes/
+
+# Build artifacts
+/build/
+/dist/
+
+# Logs
+*.log
+/logs/
+
+# ClickHouse data (local development)
+/clickhouse_data/
+
+# Grafana data (local development)
+/grafana_data/
+
+# Parser offset storage
+/parser_offsets/
+
+# Temporary files
+/tmp/
+*.tmp
+

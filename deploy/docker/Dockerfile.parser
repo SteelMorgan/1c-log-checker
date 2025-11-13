@@ -1,0 +1,39 @@
+# Build stage
+FROM golang:1.21-alpine AS builder
+
+WORKDIR /build
+
+# Install build dependencies
+RUN apk add --no-cache git make
+
+# Copy go mod files
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code
+COPY cmd/parser ./cmd/parser
+COPY internal ./internal
+
+# Build binary
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o parser ./cmd/parser
+
+# Runtime stage
+FROM alpine:latest
+
+RUN apk --no-cache add ca-certificates tzdata
+
+WORKDIR /app
+
+# Copy binary from builder
+COPY --from=builder /build/parser .
+
+# Create offset storage directory
+RUN mkdir -p /app/offsets
+
+# Run as non-root user
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+RUN chown -R appuser:appgroup /app
+USER appuser
+
+ENTRYPOINT ["./parser"]
+

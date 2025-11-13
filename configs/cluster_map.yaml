@@ -1,0 +1,26 @@
+# Cluster and Infobase GUID Mapping
+# This file maps GUIDs to human-readable names for better readability in logs and UI
+
+clusters:
+  # Example cluster
+  # "your-cluster-guid-here":
+  #   name: "Production Cluster"
+  #   notes: "Main production environment"
+
+infobases:
+  # Example infobase
+  # "your-infobase-guid-here":
+  #   name: "ERP Production"
+  #   cluster_guid: "your-cluster-guid-here"
+  #   notes: "Main ERP database"
+
+# How to get GUIDs:
+# 1. Using rac.exe (1C:Enterprise Administration Console):
+#    rac.exe cluster list
+#    rac.exe infobase summary --cluster <cluster-guid> --infobase <infobase-guid>
+#
+# 2. For file-based infobases:
+#    Check the 1Cv8Log directory name in your infobase folder
+#
+# 3. See docs/guides/get-guids.md for detailed instructions
+
