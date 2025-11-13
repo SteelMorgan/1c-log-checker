@@ -1,6 +1,6 @@
 # Спецификация: Сервис парсинга логов 1С
 
-**Версия:** 0.1.1  
+**Версия:** 0.1.2  
 **Дата создания:** 2025-11-13  
 **Дата обновления:** 2025-11-13  
 **Статус:** Draft  
@@ -40,7 +40,8 @@
 - Материализованное представление для новых ошибок
 
 **FR-4: MCP-интерфейс для агентов**
-- Инструменты: `get_event_log`, `get_tech_log`, `get_new_errors`
+- Инструменты для чтения логов: `get_event_log`, `get_tech_log`, `get_new_errors`
+- Инструменты для настройки: `configure_techlog`, `disable_techlog`, `get_techlog_config`
 - Режимы вывода: `minimal` (компактный) / `full` (все поля)
 - Фильтрация по GUID, временным диапазонам, уровням
 - Маппинг GUID → имя через `cluster_map.yaml`
@@ -277,6 +278,21 @@ internal/
 3. **get_new_errors**
    - Parameters: `cluster_guid`, `infobase_guid`, `hours`
    - Returns: Errors unique in last N hours vs previous period
+
+4. **configure_techlog**
+   - Parameters: `config_path`, `events`, `properties`, `location`, `history`
+   - Returns: Generated logcfg.xml content
+   - Description: Создаёт конфигурацию технологического журнала
+
+5. **disable_techlog**
+   - Parameters: `config_path`
+   - Returns: Success status
+   - Description: Отключает технологический журнал
+
+6. **get_techlog_config**
+   - Parameters: `config_path`
+   - Returns: Current logcfg.xml configuration
+   - Description: Читает текущую конфигурацию техжурнала
 
 ### 2.4 ClickHouse Schema
 
@@ -594,6 +610,9 @@ deploy/grafana/
 - [ ] Реализовать internal/handlers/event_log
 - [ ] Реализовать internal/handlers/tech_log
 - [ ] Реализовать internal/handlers/new_errors
+- [ ] Реализовать internal/handlers/configure_techlog (генерация logcfg.xml)
+- [ ] Реализовать internal/handlers/disable_techlog
+- [ ] Реализовать internal/handlers/get_techlog_config
 - [ ] Написать unit-тесты для handlers
 - [ ] Интеграционный тест с ClickHouse
 
@@ -628,13 +647,54 @@ deploy/grafana/
 
 ## 5. TODO (будущие версии)
 
+### 5.1 Расширение функциональности парсера
 - Поддержка `.lgd` (SQLite формат журнала регистрации)
-- Поддержка XML выгрузок
-- MCP tool для настройки logcfg.xml
+- Поддержка XML выгрузок журнала регистрации
 - Внешняя обработка 1С для получения GUIDов
+
+### 5.2 Observability и мониторинг
 - Prometheus метрики и алерты
 - Distributed rate limiting
 - Circuit breakers для ClickHouse
+
+### 5.3 База знаний и навыки (Skills)
+
+**TODO-SKILL-1: Навык "Технологический журнал 1С"**
+
+Создать отдельный skill-файл с детальным описанием:
+- Структура и формат logcfg.xml
+- Все 40+ типов событий (EXCP, CONN, DBMSSQL, SDBL, TLOCK, PROC, SCOM и др.)
+- Фильтры и условия (<eq>, <ne>, <gt>, <like> и др.)
+- Свойства событий (property name="all", property name="sql", и др.)
+- Примеры конфигураций для разных сценариев (ошибки, блокировки, производительность)
+- Best practices из Infostart.ru
+- Рекомендации по history, rotation, compression
+
+Источники:
+- https://infostart.ru/1c/articles/1195695/ (основная статья + комментарии с плюсами)
+- Документация платформы: `D:\My Projects\FrameWork 1C\scraping_its\out\v8327doc\markdown\0073_Приложение_3._Описание_и_расположение_служебных_файлов.md`
+
+**TODO-SKILL-2: База знаний "MS SQL Server и PostgreSQL в контексте 1С"**
+
+Создать индекс знаний для расследования блокировок и проблем производительности:
+
+Разделы:
+- Типы блокировок в 1С (управляемые, транзакционные)
+- Режимы блокировки MS SQL (Read Committed Snapshot Isolation - критично!)
+- Взаимоблокировки (deadlocks): причины и решения
+- Анализ блокировок через технологический журнал (события TLOCK, TTIMEOUT, TDEADLOCK)
+- Оптимизация запросов (события DBMSSQL, DBPOSTGRS, SDBL)
+- Инструменты диагностики (внешняя обработка "Монитор производительности MS SQL Server в 1С")
+- Best practices:
+  - Включить RCSI для MS SQL
+  - Минимизировать время транзакций
+  - Избегать Справочник.НайтиПоНаименованию() без режима управляемых блокировок
+  - Разделять длительные операции на батчи
+
+Источники:
+- https://infostart.ru/1c/articles/629017/ (статья про блокировки, +455 плюсов)
+- https://infostart.ru/public/557477/ (обработка "Монитор производительности MS SQL Server")
+- Документация платформы по блокировкам
 
 ---
 
@@ -682,6 +742,7 @@ deploy/grafana/
 
 | Версия | Дата       | Изменения                                      |
 |--------|------------|------------------------------------------------|
+| 0.1.2  | 2025-11-13 | Добавлены MCP tools для настройки техжурнала (configure_techlog, disable_techlog, get_techlog_config). Расширен раздел TODO: добавлены навыки для техжурнала и базы знаний по MS SQL/PostgreSQL в контексте 1С. Источники: Infostart.ru статьи про техжурнал и блокировки. |
 | 0.1.1  | 2025-11-13 | Добавлена детальная структура журнала регистрации на основе скриншотов UI конфигуратора. Обновлены схемы ClickHouse и domain models для соответствия реальным полям. Добавлен раздел UX requirements. |
 | 0.1.0  | 2025-11-13 | Первоначальная версия спеки                    |
 
