@@ -33,6 +33,10 @@ type Config struct {
 	// Cluster map
 	ClusterMapPath string
 	
+	// Event log reading method
+	EventLogMethod string // "ibcmd" (default) or "direct"
+	IbcmdPath      string // Path to ibcmd executable
+	
 	// Internal (computed)
 	IsInDocker bool // Auto-detected based on CLICKHOUSE_HOST
 }
@@ -57,6 +61,9 @@ func Load() (*Config, error) {
 		TracingEnabled: getEnvBool("TRACING_ENABLED", false),
 
 		ClusterMapPath: getEnv("CLUSTER_MAP_PATH", "configs/cluster_map.yaml"),
+		
+		EventLogMethod: getEnv("EVENT_LOG_METHOD", "ibcmd"),
+		IbcmdPath:      getEnv("IBCMD_PATH", ""),
 		
 		IsInDocker: getEnv("CLICKHOUSE_HOST", "localhost") != "localhost",
 	}
@@ -87,6 +94,13 @@ func (c *Config) Validate() error {
 	}
 	if c.MCPPort <= 0 || c.MCPPort > 65535 {
 		return fmt.Errorf("MCP_PORT must be between 1 and 65535")
+	}
+	if c.EventLogMethod != "ibcmd" && c.EventLogMethod != "direct" {
+		return fmt.Errorf("EVENT_LOG_METHOD must be 'ibcmd' or 'direct'")
+	}
+	if c.EventLogMethod == "ibcmd" && c.IbcmdPath == "" {
+		// Try to auto-detect ibcmd path
+		// This is a warning, not an error - will try to find it at runtime
 	}
 
 	return nil

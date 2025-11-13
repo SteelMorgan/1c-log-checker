@@ -1,0 +1,19 @@
+environments:
+  module: 1С
+  metamodel-version: 8.3.25.1072
+  infobase-id: 
+paths:
+  ibcmd_exec: '/opt/1cv8/x86_64/8.3.25.1072/ibcmd'
+  event_log_dir: '/home/usr1cv8/.1cv8/1C/1cv8/reg_1541/5056d0bc-699f-11ee-8c99-0242ac120002/1Cv8Log'
+format: json
+follow-time-msec: 1000
+data-receiver: 'http-service'
+receiver-parameters:
+  http-service:
+    receiver-parameters:
+  opensearch:
+    index: 'eventlog'
+    host: 'opensearch-server'
+    port: 9200
+    login: admin
+    password: admin

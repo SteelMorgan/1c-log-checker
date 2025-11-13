@@ -8,8 +8,8 @@ import (
 
 // EventLogReader reads and parses 1C Event Log files (.lgf/.lgp)
 type EventLogReader interface {
-	// Open opens the event log at the given path
-	Open(ctx context.Context, path string) error
+	// Open opens the event log (path is set during reader creation)
+	Open(ctx context.Context) error
 	
 	// Read reads the next event log record
 	// Returns io.EOF when no more records are available

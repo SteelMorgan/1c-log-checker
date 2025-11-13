@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/1c-log-checker/internal/config"
 	"github.com/1c-log-checker/internal/domain"
 	"github.com/1c-log-checker/internal/logreader"
+	"github.com/1c-log-checker/internal/logreader/eventlog"
 	"github.com/1c-log-checker/internal/mapping"
 	"github.com/1c-log-checker/internal/offset"
 	"github.com/1c-log-checker/internal/techlog"
@@ -153,22 +155,119 @@ func (s *ParserService) runEventLogReader(ctx context.Context, location logreade
 		Str("cluster_guid", location.ClusterGUID).
 		Str("infobase_guid", location.InfobaseGUID).
 		Str("path", location.BasePath).
+		Str("method", s.cfg.EventLogMethod).
 		Int("lgp_files", len(location.LgpFiles)).
 		Msg("Starting event log reader")
 	
-	// TODO: Implement actual .lgp file parsing
-	// Current implementation is a stub - need to:
-	// 1. Read .lgp file format (binary or text)
-	// 2. Parse records
-	// 3. Write to ClickHouse batch
-	// 4. Update offsets
+	// Try to use configured method, fallback to direct if ibcmd fails
+	var reader logreader.EventLogReader
+	var err error
 	
-	// For now, signal that location is ready
-	log.Info().
-		Str("infobase_guid", location.InfobaseGUID).
-		Msg("Event log location ready (parsing not implemented yet)")
+	if s.cfg.EventLogMethod == "ibcmd" {
+		reader, err = s.createIbcmdReader(location)
+		if err != nil {
+			log.Warn().
+				Err(err).
+				Msg("Failed to create ibcmd reader, falling back to direct parsing")
+			// Fallback to direct parsing
+			reader, err = s.createDirectReader(location)
+			if err != nil {
+				log.Error().Err(err).Msg("Failed to create direct reader")
+				return
+			}
+		}
+	} else {
+		// Direct parsing method
+		reader, err = s.createDirectReader(location)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to create direct reader")
+			return
+		}
+	}
 	
-	<-ctx.Done()
+	defer reader.Close()
+	
+	// Open reader
+	if err := reader.Open(ctx); err != nil {
+		log.Error().Err(err).Msg("Failed to open event log reader")
+		return
+	}
+	
+	// Read and process events
+	batch := make([]*domain.EventLogRecord, 0, 500)
+	
+	for {
+		select {
+		case <-ctx.Done():
+			// Flush pending records
+			if !s.cfg.ReadOnly && s.writer != nil {
+				if err := s.writer.Flush(ctx); err != nil {
+					log.Error().Err(err).Msg("Failed to flush writer")
+				}
+			}
+			return
+		default:
+			// Read next record
+			record, err := reader.Read(ctx)
+			if err != nil {
+				if err.Error() == "EOF" || err.Error() == "end of stream" {
+					// End of stream, wait a bit and continue
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(5 * time.Second):
+						continue
+					}
+				}
+				log.Error().Err(err).Msg("Failed to read event log record")
+				time.Sleep(1 * time.Second)
+				continue
+			}
+			
+			// Write record immediately (writer handles batching internally)
+			if !s.cfg.ReadOnly && s.writer != nil {
+				if err := s.writer.WriteEventLog(ctx, record); err != nil {
+					log.Error().Err(err).Msg("Failed to write event log record")
+				} else {
+					log.Debug().Msg("Wrote event log record")
+				}
+			} else {
+				// In READ_ONLY mode, just collect for logging
+				batch = append(batch, record)
+				if len(batch) >= 100 {
+					log.Info().Int("count", len(batch)).Msg("Read event log records (READ_ONLY mode)")
+					batch = batch[:0]
+				}
+			}
+		}
+	}
+}
+
+// createIbcmdReader creates an ibcmd-based reader
+func (s *ParserService) createIbcmdReader(location logreader.LogLocation) (logreader.EventLogReader, error) {
+	ibcmdPath := s.cfg.IbcmdPath
+	
+	// Auto-detect ibcmd if path not specified
+	if ibcmdPath == "" {
+		var err error
+		ibcmdPath, err = eventlog.FindIbcmd()
+		if err != nil {
+			return nil, fmt.Errorf("ibcmd not found: %w", err)
+		}
+		log.Info().Str("ibcmd_path", ibcmdPath).Msg("Auto-detected ibcmd path")
+	}
+	
+	// Verify ibcmd
+	if err := eventlog.VerifyIbcmd(ibcmdPath); err != nil {
+		return nil, fmt.Errorf("ibcmd verification failed: %w", err)
+	}
+	
+	return eventlog.NewIbcmdReader(ibcmdPath, location.BasePath, location.ClusterGUID, location.InfobaseGUID)
+}
+
+// createDirectReader creates a direct file parsing reader
+func (s *ParserService) createDirectReader(location logreader.LogLocation) (logreader.EventLogReader, error) {
+	return eventlog.NewReader(location.BasePath, location.ClusterGUID, location.InfobaseGUID)
 }
 
 // runTechLogTailer runs a tech log tailer for a directory

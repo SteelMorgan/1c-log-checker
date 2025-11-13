@@ -1,7 +1,6 @@
 package eventlog
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -14,20 +13,23 @@ import (
 
 // Reader reads 1C Event Log files (.lgf/.lgp)
 type Reader struct {
-	basePath string
-	lgfPath  string
-	lgpFiles []string
+	basePath     string
+	lgfPath      string
+	lgpFiles     []string
+	clusterGUID  string
+	infobaseGUID string
 	
 	currentFile *os.File
 	currentIdx  int
-	scanner     *bufio.Scanner
+	records     []*domain.EventLogRecord
+	recordIdx   int
 	
 	// For deduplication
 	seenEvents map[string]bool
 }
 
 // NewReader creates a new event log reader
-func NewReader(basePath string) (*Reader, error) {
+func NewReader(basePath, clusterGUID, infobaseGUID string) (*Reader, error) {
 	lgfPath := filepath.Join(basePath, "1Cv8.lgf")
 	
 	// Check if .lgf file exists
@@ -36,9 +38,12 @@ func NewReader(basePath string) (*Reader, error) {
 	}
 	
 	return &Reader{
-		basePath:   basePath,
-		lgfPath:    lgfPath,
-		seenEvents: make(map[string]bool),
+		basePath:     basePath,
+		lgfPath:      lgfPath,
+		clusterGUID:  clusterGUID,
+		infobaseGUID: infobaseGUID,
+		seenEvents:   make(map[string]bool),
+		records:      make([]*domain.EventLogRecord, 0),
 	}, nil
 }
 
@@ -63,69 +68,48 @@ func (r *Reader) Open(ctx context.Context) error {
 
 // Read reads the next event log record
 func (r *Reader) Read(ctx context.Context) (*domain.EventLogRecord, error) {
-	// If no current file, open the first one
-	if r.currentFile == nil {
+	// If no records loaded, parse next file
+	if len(r.records) == 0 || r.recordIdx >= len(r.records) {
+		if r.currentFile != nil {
+			r.currentFile.Close()
+			r.currentFile = nil
+		}
+		
 		if r.currentIdx >= len(r.lgpFiles) {
 			return nil, io.EOF
 		}
 		
-		if err := r.openNextFile(); err != nil {
+		if err := r.parseNextFile(); err != nil {
 			return nil, err
 		}
 	}
 	
-	// Try to read from current file
-	for {
-		if r.scanner.Scan() {
-			line := r.scanner.Text()
-			
-			// Parse the line
-			record, err := ParseEventLogLine(line)
-			if err != nil {
-				log.Warn().
-					Err(err).
-					Str("line", line[:min(len(line), 100)]).
-					Msg("Failed to parse event log line, skipping")
-				continue
-			}
-			
-			// Check for duplicates
-			eventKey := fmt.Sprintf("%s_%d_%d", 
-				record.EventTime.Format("2006-01-02T15:04:05.000000"),
-				record.SessionID,
-				record.ConnectionID)
-			
-			if r.seenEvents[eventKey] {
-				continue // Skip duplicate
-			}
-			
-			r.seenEvents[eventKey] = true
-			return record, nil
+	// Return next record
+	for r.recordIdx < len(r.records) {
+		record := r.records[r.recordIdx]
+		r.recordIdx++
+		
+		// Check for duplicates
+		eventKey := fmt.Sprintf("%s_%d_%d",
+			record.EventTime.Format("2006-01-02T15:04:05.000000"),
+			record.SessionID,
+			record.ConnectionID)
+		
+		if r.seenEvents[eventKey] {
+			continue // Skip duplicate
 		}
 		
-		// Check for scanner error
-		if err := r.scanner.Err(); err != nil {
-			return nil, fmt.Errorf("scanner error: %w", err)
-		}
-		
-		// End of current file, try next
-		r.currentFile.Close()
-		r.currentFile = nil
-		r.currentIdx++
-		
-		if r.currentIdx >= len(r.lgpFiles) {
-			return nil, io.EOF
-		}
-		
-		if err := r.openNextFile(); err != nil {
-			return nil, err
-		}
+		r.seenEvents[eventKey] = true
+		return record, nil
 	}
+	
+	// No more records in current file, try next
+	return r.Read(ctx)
 }
 
 // Seek seeks to a specific position (file index)
-func (r *Reader) Seek(ctx context.Context, fileIndex int) error {
-	if fileIndex < 0 || fileIndex >= len(r.lgpFiles) {
+func (r *Reader) Seek(ctx context.Context, fileIndex int64) error {
+	if fileIndex < 0 || int(fileIndex) >= len(r.lgpFiles) {
 		return fmt.Errorf("invalid file index: %d", fileIndex)
 	}
 	
@@ -135,8 +119,12 @@ func (r *Reader) Seek(ctx context.Context, fileIndex int) error {
 		r.currentFile = nil
 	}
 	
-	r.currentIdx = fileIndex
-	return r.openNextFile()
+	// Reset state
+	r.currentIdx = int(fileIndex)
+	r.records = make([]*domain.EventLogRecord, 0)
+	r.recordIdx = 0
+	
+	return nil // File will be parsed on next Read()
 }
 
 // Close closes the reader
@@ -147,8 +135,8 @@ func (r *Reader) Close() error {
 	return nil
 }
 
-// openNextFile opens the next .lgp file
-func (r *Reader) openNextFile() error {
+// parseNextFile parses the next .lgp file
+func (r *Reader) parseNextFile() error {
 	if r.currentIdx >= len(r.lgpFiles) {
 		return io.EOF
 	}
@@ -161,16 +149,24 @@ func (r *Reader) openNextFile() error {
 	}
 	
 	r.currentFile = file
-	r.scanner = bufio.NewScanner(file)
 	
-	// Increase scanner buffer for large lines
-	buf := make([]byte, 0, 64*1024)
-	r.scanner.Buffer(buf, 1024*1024) // 1MB max line size
+	// Create parser and parse file
+	parser := NewLgpParser(r.clusterGUID, r.infobaseGUID)
+	records, err := parser.Parse(file)
+	if err != nil {
+		file.Close()
+		return fmt.Errorf("failed to parse lgp file: %w", err)
+	}
+	
+	r.records = records
+	r.recordIdx = 0
+	r.currentIdx++
 	
 	log.Debug().
 		Str("file", filePath).
-		Int("index", r.currentIdx).
-		Msg("Opened lgp file")
+		Int("index", r.currentIdx-1).
+		Int("records", len(records)).
+		Msg("Parsed lgp file")
 	
 	return nil
 }
