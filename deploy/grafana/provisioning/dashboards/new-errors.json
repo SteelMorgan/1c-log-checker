@@ -1,0 +1,51 @@
+{
+  "dashboard": {
+    "title": "1C Logs - New Errors (24h)",
+    "tags": ["1c", "errors"],
+    "timezone": "browser",
+    "panels": [
+      {
+        "id": 1,
+        "title": "New Errors Today",
+        "type": "table",
+        "gridPos": {"h": 16, "w": 24, "x": 0, "y": 0},
+        "targets": [
+          {
+            "datasource": "ClickHouse",
+            "rawSql": "SELECT\n  first_seen AS \"Первое появление\",\n  event_name AS \"Событие\",\n  error_text AS \"Текст ошибки\",\n  occurrences AS \"Повторений\",\n  last_seen AS \"Последнее появление\",\n  infobase_name AS \"База\"\nFROM logs.mv_new_errors\nWHERE error_date = today()\n  AND error_signature NOT IN (\n    SELECT DISTINCT error_signature\n    FROM logs.mv_new_errors\n    WHERE error_date = today() - 1\n  )\nORDER BY last_seen DESC\nLIMIT 100",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "title": "New Errors Count",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 6, "x": 0, "y": 16},
+        "targets": [
+          {
+            "datasource": "ClickHouse",
+            "rawSql": "SELECT count(DISTINCT error_signature) AS count\nFROM logs.mv_new_errors\nWHERE error_date = today()\n  AND error_signature NOT IN (\n    SELECT DISTINCT error_signature\n    FROM logs.mv_new_errors\n    WHERE error_date = today() - 1\n  )",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "title": "Distribution by Infobase",
+        "type": "piechart",
+        "gridPos": {"h": 8, "w": 12, "x": 6, "y": 16},
+        "targets": [
+          {
+            "datasource": "ClickHouse",
+            "rawSql": "SELECT\n  infobase_name,\n  count() AS count\nFROM logs.mv_new_errors\nWHERE error_date = today()\nGROUP BY infobase_name",
+            "refId": "A"
+          }
+        ]
+      }
+    ],
+    "time": {"from": "now/d", "to": "now"},
+    "refresh": "1m"
+  }
+}
+
