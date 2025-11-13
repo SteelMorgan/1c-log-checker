@@ -32,6 +32,9 @@ type Config struct {
 
 	// Cluster map
 	ClusterMapPath string
+	
+	// Internal (computed)
+	IsInDocker bool // Auto-detected based on CLICKHOUSE_HOST
 }
 
 // Load loads configuration from environment variables
@@ -54,6 +57,8 @@ func Load() (*Config, error) {
 		TracingEnabled: getEnvBool("TRACING_ENABLED", false),
 
 		ClusterMapPath: getEnv("CLUSTER_MAP_PATH", "configs/cluster_map.yaml"),
+		
+		IsInDocker: getEnv("CLICKHOUSE_HOST", "localhost") != "localhost",
 	}
 
 	// Validate configuration
@@ -75,9 +80,8 @@ func (c *Config) Validate() error {
 	if c.ClickHouseDB == "" {
 		return fmt.Errorf("CLICKHOUSE_DB is required")
 	}
-	if len(c.LogDirs) == 0 && len(c.TechLogDirs) == 0 {
-		return fmt.Errorf("at least one of LOG_DIRS or TECHLOG_DIRS must be specified")
-	}
+	// Note: LOG_DIRS and TECHLOG_DIRS are optional
+	// They are required only for parser service, not for MCP server
 	if c.LogRetentionDays < 1 {
 		return fmt.Errorf("LOG_RETENTION_DAYS must be at least 1")
 	}
