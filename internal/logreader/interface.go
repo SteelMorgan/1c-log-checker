@@ -2,7 +2,6 @@ package logreader
 
 import (
 	"context"
-	"io"
 
 	"github.com/1c-log-checker/internal/domain"
 )

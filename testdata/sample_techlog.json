@@ -1,0 +1,6 @@
+{"ts":"2023-08-02T08:48:05.982000","duration":"46998","name":"SCALL","depth":"0","level":"INFO","process":"1cv8c","OSThread":"15968","ClientID":"8","Interface":"bc15bd01-10bf-413c-a856-ddc907fcd123","IName":"IVResourceRemoteConnection","Method":"0","CallID":"28284","MName":"send","DstClientID":"122"}
+{"ts":"2023-08-02T08:48:06.100000","duration":"8500000","name":"DBMSSQL","depth":"1","level":"WARN","process":"rphost","OSThread":"1234","SessionID":"26","Trans":"1:123","Usr":"OrpovaE","Sql":"SELECT TOP 1000 * FROM Document329 WHERE _Fld123 LIKE '%test%'","Rows":"850","duration":"8500000"}
+{"ts":"2023-08-02T08:48:07.200000","duration":"1500","name":"EXCP","depth":"0","level":"ERROR","process":"rphost","OSThread":"5678","SessionID":"27","Txt":"Ошибка доступа к базе данных","Descr":"Timeout expired","Exception":"SQLException"}
+{"ts":"2023-08-02T08:48:08.300000","duration":"25000","name":"TTIMEOUT","depth":"1","level":"ERROR","process":"rphost","OSThread":"9012","SessionID":"28","Trans":"1:124","Txt":"Превышено время ожидания блокировки","WaitTime":"5000"}
+{"ts":"2023-08-02T08:48:09.400000","duration":"500","name":"TDEADLOCK","depth":"0","level":"ERROR","process":"rphost","OSThread":"3456","SessionID":"29","Trans":"1:125","Txt":"Обнаружена взаимоблокировка","DeadlockVictim":"SessionID=29"}
+

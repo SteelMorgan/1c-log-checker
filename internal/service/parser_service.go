@@ -8,6 +8,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/1c-log-checker/internal/config"
 	"github.com/1c-log-checker/internal/domain"
+	"github.com/1c-log-checker/internal/logreader"
 	"github.com/1c-log-checker/internal/mapping"
 	"github.com/1c-log-checker/internal/offset"
 	"github.com/1c-log-checker/internal/techlog"
@@ -85,6 +86,25 @@ func (s *ParserService) Start(ctx context.Context) error {
 		Int("tech_log_dirs", len(s.cfg.TechLogDirs)).
 		Msg("Parser service starting...")
 	
+	// Scan for event logs
+	if len(s.cfg.LogDirs) > 0 {
+		locations, err := logreader.ScanForLogs(s.cfg.LogDirs)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to scan for event logs")
+		} else {
+			log.Info().Int("locations", len(locations)).Msg("Found event log locations")
+			
+			// Start reader for each location
+			for _, loc := range locations {
+				s.wg.Add(1)
+				go func(location logreader.LogLocation) {
+					defer s.wg.Done()
+					s.runEventLogReader(ctx, location)
+				}(loc)
+			}
+		}
+	}
+	
 	// Start tech log tailers
 	for _, dir := range s.cfg.TechLogDirs {
 		s.wg.Add(1)
@@ -93,15 +113,6 @@ func (s *ParserService) Start(ctx context.Context) error {
 			s.runTechLogTailer(ctx, directory)
 		}(dir)
 	}
-	
-	// TODO: Start event log readers
-	// for _, dir := range s.cfg.LogDirs {
-	//     s.wg.Add(1)
-	//     go func(directory string) {
-	//         defer s.wg.Done()
-	//         s.runEventLogReader(ctx, directory)
-	//     }(dir)
-	// }
 	
 	log.Info().Msg("Parser service workers started")
 	
@@ -134,6 +145,30 @@ func (s *ParserService) Stop() error {
 	
 	log.Info().Msg("Parser service stopped")
 	return nil
+}
+
+// runEventLogReader runs an event log reader for a location
+func (s *ParserService) runEventLogReader(ctx context.Context, location logreader.LogLocation) {
+	log.Info().
+		Str("cluster_guid", location.ClusterGUID).
+		Str("infobase_guid", location.InfobaseGUID).
+		Str("path", location.BasePath).
+		Int("lgp_files", len(location.LgpFiles)).
+		Msg("Starting event log reader")
+	
+	// TODO: Implement actual .lgp file parsing
+	// Current implementation is a stub - need to:
+	// 1. Read .lgp file format (binary or text)
+	// 2. Parse records
+	// 3. Write to ClickHouse batch
+	// 4. Update offsets
+	
+	// For now, signal that location is ready
+	log.Info().
+		Str("infobase_guid", location.InfobaseGUID).
+		Msg("Event log location ready (parsing not implemented yet)")
+	
+	<-ctx.Done()
 }
 
 // runTechLogTailer runs a tech log tailer for a directory
