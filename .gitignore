@@ -58,6 +58,8 @@ Thumbs.db
 
 # Parser offset storage
 /parser_offsets/
+/offsets/
+*.dat
 
 # Temporary files
 /tmp/
