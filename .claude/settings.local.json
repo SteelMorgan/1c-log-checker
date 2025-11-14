@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir:*)",
+      "Bash(findstr:*)",
+      "Bash(powershell -Command:*)",
+      "WebFetch(domain:code.claude.com)",
+      "Bash(powershell -ExecutionPolicy Bypass -File \"D:\\My Projects\\FrameWork 1C\\1c-log-checker\\setup_skills.ps1\")",
+      "Bash(powershell -ExecutionPolicy Bypass -File \"D:\\My Projects\\FrameWork 1C\\1c-log-checker\\read_config.ps1\")",
+      "Bash(tree:*)",
+      "Bash(docker ps:*)",
+      "Bash(docker logs:*)",
+      "Bash(docker exec:*)",
+      "Bash(docker restart:*)",
+      "Bash(docker-compose:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

@@ -19,24 +19,19 @@ type Config struct {
 	TechLogDirs []string // Paths to tech log directories (технологический журнал)
 
 	// Parser settings
-	LogRetentionDays int  // TTL in days
-	ReadOnly         bool // Technical mode: read logs but don't write to ClickHouse
-	OffsetMirror     bool // Mirror offset storage to ClickHouse
+	LogRetentionDays    int  // TTL in days
+	ReadOnly            bool // Technical mode: read logs but don't write to ClickHouse
+	OffsetMirror        bool // Mirror offset storage to ClickHouse
+	EnableDeduplication bool // Enable deduplication check (slower but prevents duplicates)
 
 	// MCP settings
-	MCPPort int
+	MCPPort       int
+	ClusterMapPath string // Path to cluster_map.yaml (used only by MCP server, not parser)
 
 	// Observability
 	LogLevel       string
 	TracingEnabled bool
 
-	// Cluster map
-	ClusterMapPath string
-	
-	// Event log reading method
-	EventLogMethod string // "ibcmd" (default) or "direct"
-	IbcmdPath      string // Path to ibcmd executable
-	
 	// Internal (computed)
 	IsInDocker bool // Auto-detected based on CLICKHOUSE_HOST
 }
@@ -51,20 +46,17 @@ func Load() (*Config, error) {
 		LogDirs:     parsePathList(getEnv("LOG_DIRS", "")),
 		TechLogDirs: parsePathList(getEnv("TECHLOG_DIRS", "")),
 
-		LogRetentionDays: getEnvInt("LOG_RETENTION_DAYS", 30),
-		ReadOnly:         getEnvBool("READ_ONLY", false),
-		OffsetMirror:     getEnvBool("OFFSET_MIRROR", false),
+		LogRetentionDays:    getEnvInt("LOG_RETENTION_DAYS", 30),
+		ReadOnly:            getEnvBool("READ_ONLY", false),
+		OffsetMirror:        getEnvBool("OFFSET_MIRROR", false),
+		EnableDeduplication: getEnvBool("ENABLE_DEDUPLICATION", false),
 
-		MCPPort: getEnvInt("MCP_PORT", 8080),
+		MCPPort:       getEnvInt("MCP_PORT", 8080),
+		ClusterMapPath: getEnv("CLUSTER_MAP_PATH", "configs/cluster_map.yaml"),
 
 		LogLevel:       getEnv("LOG_LEVEL", "info"),
 		TracingEnabled: getEnvBool("TRACING_ENABLED", false),
 
-		ClusterMapPath: getEnv("CLUSTER_MAP_PATH", "configs/cluster_map.yaml"),
-		
-		EventLogMethod: getEnv("EVENT_LOG_METHOD", "ibcmd"),
-		IbcmdPath:      getEnv("IBCMD_PATH", ""),
-		
 		IsInDocker: getEnv("CLICKHOUSE_HOST", "localhost") != "localhost",
 	}
 
@@ -94,13 +86,6 @@ func (c *Config) Validate() error {
 	}
 	if c.MCPPort <= 0 || c.MCPPort > 65535 {
 		return fmt.Errorf("MCP_PORT must be between 1 and 65535")
-	}
-	if c.EventLogMethod != "ibcmd" && c.EventLogMethod != "direct" {
-		return fmt.Errorf("EVENT_LOG_METHOD must be 'ibcmd' or 'direct'")
-	}
-	if c.EventLogMethod == "ibcmd" && c.IbcmdPath == "" {
-		// Try to auto-detect ibcmd path
-		// This is a warning, not an error - will try to find it at runtime
 	}
 
 	return nil

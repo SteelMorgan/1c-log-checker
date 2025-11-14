@@ -2,8 +2,11 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"path/filepath"
+	"io"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -12,7 +15,6 @@ import (
 	"github.com/1c-log-checker/internal/domain"
 	"github.com/1c-log-checker/internal/logreader"
 	"github.com/1c-log-checker/internal/logreader/eventlog"
-	"github.com/1c-log-checker/internal/mapping"
 	"github.com/1c-log-checker/internal/offset"
 	"github.com/1c-log-checker/internal/techlog"
 	"github.com/1c-log-checker/internal/writer"
@@ -21,11 +23,13 @@ import (
 
 // ParserService orchestrates log parsing workers
 type ParserService struct {
-	cfg        *config.Config
+	cfg         *config.Config
 	offsetStore offset.OffsetStore
-	writer     writer.BatchWriter
-	clusterMap *mapping.ClusterMap
-	
+	writer      writer.BatchWriter
+	debugFile   *os.File // File for saving all parsed records
+	debugMutex  sync.Mutex
+	debugCount  int64    // Counter for records written to debug file
+
 	wg sync.WaitGroup
 }
 
@@ -39,16 +43,6 @@ func NewParserService(cfg *config.Config) (*ParserService, error) {
 	offsetStore, err := offset.NewBoltDBStore("offsets/parser.db")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create offset store: %w", err)
-	}
-
-	// Load cluster map
-	clusterMap, err := mapping.LoadClusterMap(cfg.ClusterMapPath)
-	if err != nil {
-		log.Warn().Err(err).Msg("Failed to load cluster map, using GUIDs as names")
-		clusterMap = &mapping.ClusterMap{
-			Clusters:  make(map[string]mapping.ClusterInfo),
-			Infobases: make(map[string]mapping.InfobaseInfo),
-		}
 	}
 
 	// Connect to ClickHouse (if not in READ_ONLY mode)
@@ -68,16 +62,24 @@ func NewParserService(cfg *config.Config) (*ParserService, error) {
 		}
 
 		batchWriter = writer.NewClickHouseWriter(conn, writer.BatchConfig{
-			MaxSize:      500,
-			FlushTimeout: 100, // 100ms
+			MaxSize:            500,
+			FlushTimeout:       100, // 100ms
+			EnableDeduplication: cfg.EnableDeduplication,
 		})
 	}
 
+	// Open debug file for saving all parsed records
+	debugFile, err := os.OpenFile("/app/debug/parser_all_records.jsonl", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to open debug file, records won't be saved")
+		debugFile = nil
+	}
+
 	return &ParserService{
-		cfg:        cfg,
+		cfg:         cfg,
 		offsetStore: offsetStore,
-		writer:     batchWriter,
-		clusterMap: clusterMap,
+		writer:      batchWriter,
+		debugFile:   debugFile,
 	}, nil
 }
 
@@ -129,20 +131,35 @@ func (s *ParserService) Start(ctx context.Context) error {
 }
 
 // Stop stops the parser service gracefully
+// This MUST be called to release BoltDB file lock
 func (s *ParserService) Stop() error {
 	log.Info().Msg("Parser service stopping...")
 	
-	// Flush pending batches
+	// Flush pending batches first
 	if s.writer != nil {
 		if err := s.writer.Close(); err != nil {
 			log.Error().Err(err).Msg("Error flushing writer")
 		}
 	}
 	
-	// Close offset store
+	// Close offset store - CRITICAL: releases BoltDB file lock
 	if s.offsetStore != nil {
 		if err := s.offsetStore.Close(); err != nil {
 			log.Error().Err(err).Msg("Error closing offset store")
+			return err // Return error so caller knows cleanup failed
+		}
+		log.Debug().Msg("Offset store closed, BoltDB file unlocked")
+	}
+	
+	// Close debug file
+	if s.debugFile != nil {
+		if err := s.debugFile.Close(); err != nil {
+			log.Warn().Err(err).Msg("Failed to close debug file")
+		} else {
+			log.Info().
+				Str("file", "parser_all_records.jsonl").
+				Int64("total_records", s.debugCount).
+				Msg("All parsed records saved to debug file")
 		}
 	}
 	
@@ -152,38 +169,23 @@ func (s *ParserService) Stop() error {
 
 // runEventLogReader runs an event log reader for a location
 func (s *ParserService) runEventLogReader(ctx context.Context, location logreader.LogLocation) {
+	startTime := time.Now()
+	
 	log.Info().
 		Str("cluster_guid", location.ClusterGUID).
+		Str("cluster_name", location.ClusterName).
 		Str("infobase_guid", location.InfobaseGUID).
+		Str("infobase_name", location.InfobaseName).
 		Str("path", location.BasePath).
-		Str("method", s.cfg.EventLogMethod).
 		Int("lgp_files", len(location.LgpFiles)).
 		Msg("Starting event log reader")
-	
-	// Try to use configured method, fallback to direct if ibcmd fails
-	var reader logreader.EventLogReader
-	var err error
-	
-	if s.cfg.EventLogMethod == "ibcmd" {
-		reader, err = s.createIbcmdReader(location)
-		if err != nil {
-			log.Warn().
-				Err(err).
-				Msg("Failed to create ibcmd reader, falling back to direct parsing")
-			// Fallback to direct parsing
-			reader, err = s.createDirectReader(location)
-			if err != nil {
-				log.Error().Err(err).Msg("Failed to create direct reader")
-				return
-			}
-		}
-	} else {
-		// Direct parsing method
-		reader, err = s.createDirectReader(location)
-		if err != nil {
-			log.Error().Err(err).Msg("Failed to create direct reader")
-			return
-		}
+
+	// Create direct file parsing reader
+	// Note: InfobaseName will be empty (not available from 1C files directly)
+	reader, err := s.createDirectReader(location, location.ClusterName, location.InfobaseName)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to create direct reader")
+		return
 	}
 	
 	defer reader.Close()
@@ -211,18 +213,54 @@ func (s *ParserService) runEventLogReader(ctx context.Context, location logreade
 			// Read next record
 			record, err := reader.Read(ctx)
 			if err != nil {
-				if err.Error() == "EOF" || err.Error() == "end of stream" {
-					// End of stream, wait a bit and continue
-					select {
-					case <-ctx.Done():
-						return
-					case <-time.After(5 * time.Second):
-						continue
+			if err == io.EOF || strings.Contains(err.Error(), "EOF") || strings.Contains(err.Error(), "end of stream") {
+				// Flush pending records before waiting for new data
+				if !s.cfg.ReadOnly && s.writer != nil {
+					if err := s.writer.Flush(ctx); err != nil {
+						log.Error().Err(err).Msg("Failed to flush writer at EOF")
+					} else {
+						log.Debug().Msg("Flushed pending records at EOF")
 					}
 				}
+				
+				// End of stream - in READ_ONLY mode, we're done
+				if s.cfg.ReadOnly {
+					log.Info().Msg("Reached end of log files (READ_ONLY mode, exiting)")
+					return
+				}
+				// In live mode, wait a bit and continue
+				log.Debug().Msg("End of stream, waiting for new data...")
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(5 * time.Second):
+					continue
+				}
+			}
 				log.Error().Err(err).Msg("Failed to read event log record")
 				time.Sleep(1 * time.Second)
 				continue
+			}
+			
+			// Save all parsed records to debug file (before deduplication)
+			if s.debugFile != nil {
+				s.debugMutex.Lock()
+				encoder := json.NewEncoder(s.debugFile)
+				if err := encoder.Encode(record); err != nil {
+					log.Warn().Err(err).Msg("Failed to write record to debug file")
+				} else {
+					s.debugCount++
+					if s.debugCount%50 == 0 {
+						elapsed := time.Since(startTime)
+						recordsPerSec := float64(s.debugCount) / elapsed.Seconds()
+						log.Info().
+							Int64("debug_records", s.debugCount).
+							Dur("elapsed_time", elapsed).
+							Float64("records_per_second", recordsPerSec).
+							Msg("Saved records to debug file")
+					}
+				}
+				s.debugMutex.Unlock()
 			}
 			
 			// Write record immediately (writer handles batching internally)
@@ -233,10 +271,34 @@ func (s *ParserService) runEventLogReader(ctx context.Context, location logreade
 					log.Debug().Msg("Wrote event log record")
 				}
 			} else {
-				// In READ_ONLY mode, just collect for logging
+				// In READ_ONLY mode, log each record in detail for comparison
 				batch = append(batch, record)
+				
+				// Log each record with full details for comparison with 1C configurator
+				log.Info().
+					Str("event_time", record.EventTime.Format("02.01.2006 15:04:05")).
+					Str("level", record.Level).
+					Str("event", record.Event).
+					Str("event_presentation", record.EventPresentation).
+					Str("user_name", record.UserName).
+					Str("computer", record.Computer).
+					Str("application", record.ApplicationPresentation).
+					Uint64("session_id", record.SessionID).
+					Str("transaction_status", record.TransactionStatus).
+					Str("comment", record.Comment).
+					Str("metadata", record.MetadataPresentation).
+					Str("data_presentation", record.DataPresentation).
+					Str("cluster_guid", record.ClusterGUID).
+					Str("infobase_guid", record.InfobaseGUID).
+					Msg("Parsed event log record")
+				
+				// Also log summary every 100 records
 				if len(batch) >= 100 {
-					log.Info().Int("count", len(batch)).Msg("Read event log records (READ_ONLY mode)")
+					log.Info().
+						Int("total_count", len(batch)).
+						Str("cluster_guid", record.ClusterGUID).
+						Str("infobase_guid", record.InfobaseGUID).
+						Msg("Batch summary (READ_ONLY mode)")
 					batch = batch[:0]
 				}
 			}
@@ -244,34 +306,9 @@ func (s *ParserService) runEventLogReader(ctx context.Context, location logreade
 	}
 }
 
-// createIbcmdReader creates an ibcmd-based reader
-func (s *ParserService) createIbcmdReader(location logreader.LogLocation) (logreader.EventLogReader, error) {
-	ibcmdPath := s.cfg.IbcmdPath
-	
-	// Auto-detect ibcmd if path not specified
-	if ibcmdPath == "" {
-		var err error
-		ibcmdPath, err = eventlog.FindIbcmd()
-		if err != nil {
-			return nil, fmt.Errorf("ibcmd not found: %w", err)
-		}
-		// FindIbcmd returns full path, extract version folder
-		ibcmdPath = filepath.Dir(filepath.Dir(ibcmdPath)) // Remove \bin\ibcmd.exe
-		log.Info().Str("ibcmd_path", ibcmdPath).Msg("Auto-detected ibcmd version folder")
-	}
-	
-	// Verify ibcmd (add \bin\ibcmd.exe for verification)
-	fullPath := filepath.Join(ibcmdPath, "bin", "ibcmd.exe")
-	if err := eventlog.VerifyIbcmd(fullPath); err != nil {
-		return nil, fmt.Errorf("ibcmd verification failed: %w", err)
-	}
-	
-	return eventlog.NewIbcmdReader(ibcmdPath, location.BasePath, location.ClusterGUID, location.InfobaseGUID)
-}
-
 // createDirectReader creates a direct file parsing reader
-func (s *ParserService) createDirectReader(location logreader.LogLocation) (logreader.EventLogReader, error) {
-	return eventlog.NewReader(location.BasePath, location.ClusterGUID, location.InfobaseGUID)
+func (s *ParserService) createDirectReader(location logreader.LogLocation, clusterName, infobaseName string) (logreader.EventLogReader, error) {
+	return eventlog.NewReader(location.BasePath, location.ClusterGUID, location.InfobaseGUID, clusterName, infobaseName)
 }
 
 // runTechLogTailer runs a tech log tailer for a directory

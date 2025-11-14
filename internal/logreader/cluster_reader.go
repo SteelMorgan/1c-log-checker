@@ -17,9 +17,34 @@ type ClusterInfo struct {
 	Port int
 }
 
-// ReadClusterInfo reads cluster GUID from 1CV8Clst.lst file
-// File format (partial): {b0881663-f2a7-4195-b7a2-f7f8e6c3a8f3,"Локальный кластер",1541,...}
+// InfobaseInfo contains infobase metadata from 1CV8Clst.lst
+type InfobaseInfo struct {
+	GUID string
+	Name string
+}
+
+// ClusterFileData contains all data from 1CV8Clst.lst file
+type ClusterFileData struct {
+	Cluster   *ClusterInfo
+	Infobases map[string]InfobaseInfo // Map: GUID -> InfobaseInfo
+}
+
+// ReadClusterInfo reads cluster GUID and name from 1CV8Clst.lst file
+// File format: {<cluster_guid>,"<cluster_name>",<port>,...}
+//              {<infobase_guid>,"<infobase_name>",...}
+//              ...
+// First record is cluster, subsequent records are infobases
 func ReadClusterInfo(regDir string) (*ClusterInfo, error) {
+	data, err := ReadClusterFileData(regDir)
+	if err != nil {
+		return nil, err
+	}
+	return data.Cluster, nil
+}
+
+// ReadClusterFileData reads all data from 1CV8Clst.lst file
+// Returns cluster info and map of infobases (GUID -> InfobaseInfo)
+func ReadClusterFileData(regDir string) (*ClusterFileData, error) {
 	// Path to 1CV8Clst.lst
 	clstPath := filepath.Join(regDir, "1CV8Clst.lst")
 	
@@ -30,28 +55,62 @@ func ReadClusterInfo(regDir string) (*ClusterInfo, error) {
 	
 	content := string(data)
 	
-	// Extract cluster GUID using regex
-	// Pattern: {<guid>,"<name>",<port>,...}
-	// First occurrence is the cluster info
-	guidPattern := regexp.MustCompile(`\{([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}),"([^"]+)",(\d+)`)
+	// Pattern for parsing records: {<guid>,"<name>",...}
+	// GUID can be in format xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+	// Name is in quotes and can contain any characters except quotes
+	recordPattern := regexp.MustCompile(`\{([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}),"([^"]+)"`)
 	
-	matches := guidPattern.FindStringSubmatch(content)
-	if len(matches) < 4 {
+	matches := recordPattern.FindAllStringSubmatch(content, -1)
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("no records found in 1CV8Clst.lst")
+	}
+	
+	// First record is cluster info
+	if len(matches) < 1 {
 		return nil, fmt.Errorf("failed to parse cluster info from 1CV8Clst.lst")
 	}
 	
-	info := &ClusterInfo{
-		GUID: matches[1],
-		Name: matches[2],
+	clusterInfo := &ClusterInfo{
+		GUID: matches[0][1],
+		Name: matches[0][2],
 		Port: 0, // We already know port from reg_<port>
 	}
 	
-	log.Debug().
-		Str("cluster_guid", info.GUID).
-		Str("cluster_name", info.Name).
-		Msg("Read cluster info from 1CV8Clst.lst")
+	// Subsequent records are infobases
+	infobases := make(map[string]InfobaseInfo)
+	for i := 1; i < len(matches); i++ {
+		infobaseGUID := matches[i][1]
+		infobaseName := matches[i][2]
+		infobases[infobaseGUID] = InfobaseInfo{
+			GUID: infobaseGUID,
+			Name: infobaseName,
+		}
+	}
 	
-	return info, nil
+	log.Debug().
+		Str("cluster_guid", clusterInfo.GUID).
+		Str("cluster_name", clusterInfo.Name).
+		Int("infobases_count", len(infobases)).
+		Msg("Read cluster and infobases info from 1CV8Clst.lst")
+	
+	return &ClusterFileData{
+		Cluster:   clusterInfo,
+		Infobases: infobases,
+	}, nil
+}
+
+// GetInfobaseName reads infobase name from 1CV8Clst.lst by GUID
+func GetInfobaseName(regDir, infobaseGUID string) (string, error) {
+	data, err := ReadClusterFileData(regDir)
+	if err != nil {
+		return "", err
+	}
+	
+	if infobase, ok := data.Infobases[infobaseGUID]; ok {
+		return infobase.Name, nil
+	}
+	
+	return "", fmt.Errorf("infobase GUID %s not found in 1CV8Clst.lst", infobaseGUID)
 }
 
 // GetClusterGUIDForReg reads cluster GUID for a given reg_<port> directory

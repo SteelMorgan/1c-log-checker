@@ -27,11 +27,14 @@ CREATE TABLE IF NOT EXISTS logs.event_log (
     
     -- Сеанс и соединение
     session_id UInt64 CODEC(T64, ZSTD),        -- Сеанс
-    connection_id UInt64 CODEC(T64, ZSTD),     -- Соединение
-    
+    connection_id UInt64 CODEC(T64, ZSTD),     -- Соединение (ID)
+    connection String CODEC(ZSTD),             -- Строка соединения
+
     -- Транзакция
     transaction_status String CODEC(ZSTD),     -- Статус транзакции
     transaction_id String CODEC(ZSTD),         -- Идентификатор транзакции
+    transaction_number Int64 CODEC(T64, ZSTD), -- Номер транзакции
+    transaction_datetime DateTime64(6) CODEC(Delta, ZSTD), -- Дата/время транзакции
     
     -- Разделение данных сеанса
     data_separation String CODEC(ZSTD),        -- Разделение данных сеанса
@@ -52,10 +55,13 @@ CREATE TABLE IF NOT EXISTS logs.event_log (
     
     -- Дополнительные свойства (расширяемость)
     props_key Array(String) CODEC(ZSTD),
-    props_value Array(String) CODEC(ZSTD)
+    props_value Array(String) CODEC(ZSTD),
+    
+    -- Хеш записи для дедупликации
+    record_hash String CODEC(ZSTD)  -- SHA256 hash (64 hex characters)
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMMDD(event_time)
-ORDER BY (cluster_guid, infobase_guid, event_time, session_id)
+ORDER BY (cluster_guid, infobase_guid, event_time, session_id, record_hash)
 TTL event_time + INTERVAL 30 DAY
 SETTINGS index_granularity = 8192;
 
@@ -65,4 +71,6 @@ ALTER TABLE logs.event_log ADD INDEX idx_event event TYPE set(0) GRANULARITY 4;
 ALTER TABLE logs.event_log ADD INDEX idx_user_name user_name TYPE set(0) GRANULARITY 4;
 ALTER TABLE logs.event_log ADD INDEX idx_session session_id TYPE minmax GRANULARITY 4;
 ALTER TABLE logs.event_log ADD INDEX idx_transaction transaction_id TYPE bloom_filter(0.01) GRANULARITY 4;
+ALTER TABLE logs.event_log ADD INDEX idx_transaction_number transaction_number TYPE minmax GRANULARITY 4;
+ALTER TABLE logs.event_log ADD INDEX idx_hash record_hash TYPE bloom_filter(0.01) GRANULARITY 4;
 

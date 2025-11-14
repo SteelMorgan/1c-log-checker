@@ -1,7 +1,23 @@
 package eventlog
 
+// LGP Parser for 1C Event Log files
+//
+// This parser is based on the logic from OneSTools.EventLog project:
+// https://github.com/akpaevj/OneSTools.EventLog
+//
+// Key concepts borrowed:
+// - Structure of event log record fields (17 fields)
+// - Multi-line record parsing with brace depth tracking
+// - Quote-aware brace counting (braces inside strings are ignored)
+// - Transaction parsing from hex format
+// - Value mappings (severity, application, event types)
+// - Complex data structure parsing (R, U, S, B, P types)
+//
+// See: docs/changelog/lgp-parser-enhancement.md for details
+
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"strconv"
@@ -9,6 +25,7 @@ import (
 	"time"
 
 	"github.com/1c-log-checker/internal/domain"
+	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 )
 
@@ -19,13 +36,19 @@ import (
 type LgpParser struct {
 	infobaseGUID string
 	clusterGUID  string
+	clusterName   string
+	infobaseName  string
+	lgfReader     *LgfReader // For resolving user_id, computer_id, etc.
 }
 
 // NewLgpParser creates a new parser for .lgp files
-func NewLgpParser(clusterGUID, infobaseGUID string) *LgpParser {
+func NewLgpParser(clusterGUID, infobaseGUID, clusterName, infobaseName string, lgfReader *LgfReader) *LgpParser {
 	return &LgpParser{
 		clusterGUID:  clusterGUID,
+		clusterName:  clusterName,
 		infobaseGUID: infobaseGUID,
+		infobaseName: infobaseName,
+		lgfReader:    lgfReader,
 	}
 }
 
@@ -58,39 +81,116 @@ func (p *LgpParser) Parse(r io.Reader) ([]*domain.EventLogRecord, error) {
 	}
 	lineNum++
 	
-	// Skip empty line
-	if scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line != "" {
-			// This might be the first record, process it
-			record, err := p.parseRecord(line)
-			if err != nil {
-				log.Warn().Err(err).Int("line", lineNum).Msg("Failed to parse record, skipping")
+	// Read all records (records can span multiple lines)
+	// Based on C# BracketsListReader logic: track brace depth to find complete records
+	var currentRecord strings.Builder
+	braceDepth := 0
+	inQuotes := false
+	escapeNext := false
+	
+	for scanner.Scan() {
+		line := scanner.Text() // Don't trim - preserve structure
+		lineNum++
+		
+		// Trim leading whitespace for processing, but preserve structure
+		lineTrimmed := strings.TrimLeft(line, " \t")
+		
+		// Handle lines that start with comma
+		// If we're building a record (braceDepth > 0), comma is part of continuation - add it
+		// If we're not building a record (braceDepth == 0), comma is separator - skip it
+		if strings.HasPrefix(lineTrimmed, ",") {
+			if braceDepth == 0 {
+				// Not building a record - comma is separator, check what's after it
+				afterComma := strings.TrimSpace(lineTrimmed[1:])
+				if strings.HasPrefix(afterComma, "{") {
+					// New record starts after comma - process from after comma
+					lineTrimmed = afterComma
+				} else if afterComma == "" {
+					// Just a comma, skip this line
+					continue
+				} else {
+					// Something else after comma - might be continuation, but we're not building
+					// This shouldn't happen, but handle it
+					lineTrimmed = afterComma
+				}
+			}
+			// If braceDepth > 0, we're building a record - comma is part of it, process normally
+		}
+		
+		// Process each character to track braces and quotes
+		for _, r := range lineTrimmed {
+			// Handle escape sequences in quoted strings
+			if escapeNext {
+				currentRecord.WriteRune(r)
+				escapeNext = false
+				continue
+			}
+			
+			if r == '\\' && inQuotes {
+				escapeNext = true
+				currentRecord.WriteRune(r)
+				continue
+			}
+			
+			// Track quotes (strings can contain braces)
+			if r == '"' {
+				inQuotes = !inQuotes
+				currentRecord.WriteRune(r)
+				continue
+			}
+			
+			// Only count braces when not inside quotes
+			if !inQuotes {
+				if r == '{' {
+					// If we're starting a new record and depth was 0, this is the start
+					if braceDepth == 0 {
+						currentRecord.Reset()
+					}
+					braceDepth++
+					currentRecord.WriteRune(r)
+				} else if r == '}' {
+					braceDepth--
+					currentRecord.WriteRune(r)
+					
+					// If brace depth is 0, we have a complete record
+					if braceDepth == 0 {
+						recordStr := strings.TrimSpace(currentRecord.String())
+						
+						// Skip empty records
+						if recordStr == "" || recordStr == "{}" {
+							currentRecord.Reset()
+							continue
+						}
+						
+						record, err := p.parseRecord(recordStr)
+						if err != nil {
+							log.Warn().Err(err).Int("line", lineNum).Str("line_preview", truncate(recordStr, 100)).Msg("Failed to parse record, skipping")
+							currentRecord.Reset()
+							continue
+						}
+						
+						records = append(records, record)
+						currentRecord.Reset()
+					}
+				} else {
+					currentRecord.WriteRune(r)
+				}
 			} else {
-				records = append(records, record)
+				// Inside quotes - just copy
+				currentRecord.WriteRune(r)
 			}
 		}
-		lineNum++
+		
+		// If we're building a record and haven't closed it, add newline
+		// (but only if we actually added something to the record)
+		if braceDepth > 0 && currentRecord.Len() > 0 {
+			currentRecord.WriteRune('\n')
+		}
 	}
 	
-	// Read all records
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		
-		// Remove trailing comma if present
-		line = strings.TrimSuffix(line, ",")
-		
-		record, err := p.parseRecord(line)
-		if err != nil {
-			log.Warn().Err(err).Int("line", lineNum).Str("line_preview", truncate(line, 100)).Msg("Failed to parse record, skipping")
-			continue
-		}
-		
-		records = append(records, record)
-		lineNum++
+	// Check if there's an incomplete record at the end
+	if braceDepth > 0 && currentRecord.Len() > 0 {
+		log.Warn().Int("line", lineNum).Str("record_preview", truncate(currentRecord.String(), 100)).Msg("Incomplete record at end of file, skipping")
 	}
 	
 	if err := scanner.Err(); err != nil {
@@ -105,14 +205,34 @@ func (p *LgpParser) Parse(r io.Reader) ([]*domain.EventLogRecord, error) {
 // Format based on OneSTools.EventLog C# implementation:
 // {timestamp,transaction_status,{transaction_date_hex,transaction_number_hex},user_id,computer_id,application,connection,event_id,severity,comment,metadata,data,data_presentation,server,main_port,add_port,session}
 func (p *LgpParser) parseRecord(line string) (*domain.EventLogRecord, error) {
+	// Trim whitespace first
+	line = strings.TrimSpace(line)
+	
+	// Skip empty lines or lines that don't start with {
+	if line == "" || !strings.HasPrefix(line, "{") {
+		return nil, fmt.Errorf("empty or invalid record line")
+	}
+	
 	// Remove outer braces
 	line = strings.TrimPrefix(line, "{")
 	line = strings.TrimSuffix(line, "}")
+	line = strings.TrimSpace(line)
+	
+	// Check if line is empty after removing braces
+	if line == "" {
+		return nil, fmt.Errorf("empty record after removing braces")
+	}
+	
+	// Default date for invalid/zero dates (1980-01-01 instead of 0001-01-01 to avoid Grafana/ClickHouse errors)
+	defaultTransactionDate := time.Date(1980, 1, 1, 0, 0, 0, 0, time.UTC)
 	
 	record := &domain.EventLogRecord{
-		ClusterGUID:  p.clusterGUID,
-		InfobaseGUID: p.infobaseGUID,
-		Properties:   make(map[string]string),
+		ClusterGUID:        p.clusterGUID,
+		ClusterName:        p.clusterName,
+		InfobaseGUID:       p.infobaseGUID,
+		InfobaseName:       p.infobaseName,
+		TransactionDateTime: defaultTransactionDate, // Set default to avoid zero time
+		Properties:         make(map[string]string),
 	}
 	
 	// Parse fields using tokenizer that handles nested structures
@@ -140,7 +260,24 @@ func (p *LgpParser) parseRecord(line string) (*domain.EventLogRecord, error) {
 	if len(tokens) > 2 {
 		transactionDateTime, transactionNumber, connectionID, err := parseTransactionFromHex(tokens[2])
 		if err == nil {
-			record.TransactionDateTime = transactionDateTime
+			// Validate transaction datetime - normalize to range 1980-01-01 to 2040-01-01
+			minDate := time.Date(1980, 1, 1, 0, 0, 0, 0, time.UTC)
+			maxDate := time.Date(2040, 1, 1, 0, 0, 0, 0, time.UTC)
+			if transactionDateTime.IsZero() || transactionDateTime.Before(minDate) {
+				// Invalid date (zero or too small) - use minimum allowed date
+				log.Debug().
+					Time("invalid_date", transactionDateTime).
+					Msg("Transaction datetime is zero or before minimum, using minimum date 1980-01-01")
+				record.TransactionDateTime = minDate
+			} else if transactionDateTime.After(maxDate) {
+				// Invalid date (too large) - use maximum allowed date
+				log.Debug().
+					Time("invalid_date", transactionDateTime).
+					Msg("Transaction datetime is after maximum, using maximum date 2040-01-01")
+				record.TransactionDateTime = maxDate
+			} else {
+				record.TransactionDateTime = transactionDateTime
+			}
 			record.TransactionNumber = transactionNumber
 			record.ConnectionID = connectionID
 			// TransactionID is derived from transaction number
@@ -148,22 +285,61 @@ func (p *LgpParser) parseRecord(line string) (*domain.EventLogRecord, error) {
 		}
 	}
 	
-	// Field 3: user_id (number - will be resolved from LGF file later)
-	// For now, store as string in properties
+	// Field 3: user_id (number - resolved from LGF file)
+	// Based on OneSTools.EventLog: GetReferencedObjectValue(ObjectType.Users, parsedData[3])
 	if len(tokens) > 3 {
+		userID := parseNumberString(tokens[3])
+		if p.lgfReader != nil && userID > 0 {
+			userName, userUUID := p.lgfReader.GetReferencedObjectValue(ObjectTypeUsers, userID, context.Background())
+			if userName != "" {
+				record.UserName = userName
+			} else if userUUID != "" {
+				// If name is empty but UUID exists, use UUID as fallback
+				record.UserName = userUUID
+			}
+			if userUUID != "" {
+				if uuid, err := uuid.Parse(userUUID); err == nil {
+					record.UserID = uuid
+				}
+			}
+		}
+		// Store original ID in properties for reference
 		record.Properties["user_id"] = tokens[3]
 	}
 	
-	// Field 4: computer_id (number - will be resolved from LGF file later)
+	// Field 4: computer_id (number - resolved from LGF file)
+	// Based on OneSTools.EventLog: GetObjectValue(ObjectType.Computers, parsedData[4])
 	if len(tokens) > 4 {
+		computerID := parseNumberString(tokens[4])
+		if p.lgfReader != nil && computerID > 0 {
+			computerName := p.lgfReader.GetObjectValue(ObjectTypeComputers, computerID, context.Background())
+			if computerName != "" {
+				record.Computer = computerName
+			}
+		}
+		// Store original ID in properties for reference
 		record.Properties["computer_id"] = tokens[4]
 	}
 	
 	// Field 5: application (code - will be resolved from LGF file later)
 	if len(tokens) > 5 {
-		// Store raw code, will be resolved to presentation later
-		record.Application = tokens[5]
-		record.ApplicationPresentation = getApplicationPresentation(tokens[5])
+		applicationID := parseNumberString(tokens[5])
+		if p.lgfReader != nil && applicationID > 0 {
+			// Get application code from LGF file (e.g., "1CV8C", "WebClient")
+			applicationCode := p.lgfReader.GetObjectValue(ObjectTypeApplications, applicationID, context.Background())
+			if applicationCode != "" {
+				record.Application = applicationCode
+				record.ApplicationPresentation = getApplicationPresentation(applicationCode)
+			} else {
+				// Fallback: use raw ID if not found in LGF
+				record.Application = tokens[5]
+				record.ApplicationPresentation = getApplicationPresentation(tokens[5])
+			}
+		} else {
+			// If ID is 0 or LGF reader is nil, use raw value
+			record.Application = tokens[5]
+			record.ApplicationPresentation = getApplicationPresentation(tokens[5])
+		}
 	}
 	
 	// Field 6: connection (string)
@@ -171,11 +347,30 @@ func (p *LgpParser) parseRecord(line string) (*domain.EventLogRecord, error) {
 		record.Connection = unquoteString(tokens[6])
 	}
 	
-	// Field 7: event_id (number - will be resolved from LGF file later)
+	// Field 7: event_id (number - MUST be resolved from LGF file)
+	// The event ID is a number that maps to an event code (e.g., "_$Data$_.New")
+	// which then needs to be converted to human-readable presentation
 	if len(tokens) > 7 {
-		// Store raw code, will be resolved to presentation later
-		record.Event = tokens[7]
-		record.EventPresentation = getEventPresentation(tokens[7])
+		eventID := parseNumberString(tokens[7])
+		if p.lgfReader != nil && eventID > 0 {
+			// Get event code from LGF file (e.g., "_$Data$_.New", "_$Access$_.Access")
+			eventCode := p.lgfReader.GetObjectValue(ObjectTypeEvents, eventID, context.Background())
+			if eventCode != "" {
+				record.Event = eventCode
+				record.EventPresentation = getEventPresentation(eventCode)
+			} else {
+				// Fallback: if event not found in LGF, use raw ID and try to map it
+				record.Event = tokens[7]
+				record.EventPresentation = getEventPresentation(tokens[7])
+				log.Debug().
+					Str("event_id", tokens[7]).
+					Msg("Event ID not found in LGF file, using raw ID")
+			}
+		} else {
+			// If ID is 0 or LGF reader is nil, use raw value
+			record.Event = tokens[7]
+			record.EventPresentation = getEventPresentation(tokens[7])
+		}
 	}
 	
 	// Field 8: severity (I, E, W, N) - this is the level!
@@ -188,12 +383,25 @@ func (p *LgpParser) parseRecord(line string) (*domain.EventLogRecord, error) {
 		record.Comment = unquoteString(tokens[9])
 	}
 	
-	// Field 10: metadata (array - will be resolved from LGF file later)
+	// Field 10: metadata (array - resolved from LGF file)
+	// Based on C#: GetReferencedObjectValue(ObjectType.Metadata, parsedData[10])
+	// Returns (value, uuid) where value is the presentation (MetadataPresentation)
 	if len(tokens) > 10 {
-		metadata, err := parseMetadataArray(tokens[10])
-		if err == nil && len(metadata) > 0 {
-			record.MetadataName = metadata[0]
+		metadataID := parseNumberString(tokens[10])
+		if p.lgfReader != nil && metadataID > 0 {
+			metadataPresentation, metadataUUID := p.lgfReader.GetReferencedObjectValue(ObjectTypeMetadata, metadataID, context.Background())
+			if metadataPresentation != "" {
+				record.MetadataPresentation = metadataPresentation
+				// Extract metadata name from presentation if possible, or use UUID
+				if metadataUUID != "" {
+					record.MetadataName = metadataUUID
+				} else {
+					record.MetadataName = metadataPresentation
+				}
+			}
 		}
+		// Store original ID in properties for reference
+		record.Properties["metadata_id"] = tokens[10]
 	}
 	
 	// Field 11: data (complex structure)
@@ -304,6 +512,9 @@ func tokenizeRecord(line string) ([]string, error) {
 }
 
 // parseLgpTimestamp parses timestamp in format YYYYMMDDHHMMSS
+// 1C stores timestamps in local time (MSK for Russian installations)
+// We parse as UTC to match ClickHouse storage (ClickHouse stores DateTime in UTC)
+// The timestamp from 1C log is already in local time, so we treat it as UTC
 func parseLgpTimestamp(s string) (time.Time, error) {
 	if len(s) != 14 {
 		return time.Time{}, fmt.Errorf("invalid timestamp length: %d", len(s))
@@ -316,7 +527,10 @@ func parseLgpTimestamp(s string) (time.Time, error) {
 	min, _ := strconv.Atoi(s[10:12])
 	sec, _ := strconv.Atoi(s[12:14])
 	
-	return time.Date(year, time.Month(month), day, hour, min, sec, 0, time.Local), nil
+	// Parse as UTC - 1C logs store time in local timezone (MSK), but we need UTC for ClickHouse
+	// Note: This assumes 1C log timestamps are in MSK. If your 1C server uses different timezone,
+	// you may need to adjust this or add timezone configuration.
+	return time.Date(year, time.Month(month), day, hour, min, sec, 0, time.UTC), nil
 }
 
 // parseTransactionFromHex parses transaction field {transaction_date_hex, transaction_number_hex}
@@ -534,6 +748,7 @@ func getEventPresentation(code string) string {
 		"_$InfoBase$_.RestoreError":                            "Информационная база.Ошибка загрузки из файла",
 		"_$InfoBase$_.RestoreFinish":                           "Информационная база.Окончание загрузки из файла",
 		"_$InfoBase$_.RestoreStart":                            "Информационная база.Начало загрузки из файла",
+		"_$InfoBase$_.SessionLockChange":                       "Информационная база.Изменение блокировки сеанса",
 		"_$InfoBase$_.SecondFactorAuthTemplateDelete":          "Информационная база.Удаление шаблона вторго фактора аутентификации",
 		"_$InfoBase$_.SecondFactorAuthTemplateNew":             "Информационная база.Добавление шаблона вторго фактора аутентификации",
 		"_$InfoBase$_.SecondFactorAuthTemplateUpdate":           "Информационная база.Изменение шаблона вторго фактора аутентификации",
@@ -553,6 +768,7 @@ func getEventPresentation(code string) string {
 		"_$Session$_.AuthenticationError":                      "Сеанс.Ошибка аутентификации",
 		"_$Session$_.AuthenticationFirstFactor":                "Сеанс.Аутентификация первый фактор",
 		"_$Session$_.ConfigExtensionApplyError":                "Сеанс.Ошибка применения расширения конфигурации",
+		"_$Session$_.DataZoneChange":                           "Сеанс.Изменение зоны данных",
 		"_$Session$_.Finish":                                   "Сеанс.Завершение",
 		"_$Session$_.Start":                                    "Сеанс.Начало",
 		"_$Transaction$_.Begin":                                "Транзакция.Начало",

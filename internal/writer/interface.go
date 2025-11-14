@@ -23,7 +23,8 @@ type BatchWriter interface {
 
 // BatchConfig configures batch behavior
 type BatchConfig struct {
-	MaxSize      int   // Maximum records per batch
-	FlushTimeout int64 // Maximum milliseconds to wait before flush
+	MaxSize            int   // Maximum records per batch
+	FlushTimeout       int64 // Maximum milliseconds to wait before flush
+	EnableDeduplication bool // Enable deduplication check (slower but prevents duplicates)
 }
 

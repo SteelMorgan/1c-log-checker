@@ -21,11 +21,15 @@ type BoltDBStore struct {
 
 // NewBoltDBStore creates a new BoltDB offset store
 func NewBoltDBStore(dbPath string) (*BoltDBStore, error) {
+	// Try to open with short timeout
 	db, err := bbolt.Open(dbPath, 0600, &bbolt.Options{
 		Timeout: 1 * time.Second,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to open boltdb: %w", err)
+		// If file is locked, it means another process is holding it
+		// This usually happens when previous process was killed without graceful shutdown
+		// We can't automatically unlock it - user needs to stop the process manually
+		return nil, fmt.Errorf("failed to open boltdb (file may be locked by another process): %w", err)
 	}
 	
 	// Create bucket if not exists

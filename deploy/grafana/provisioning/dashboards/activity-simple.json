@@ -1,0 +1,30 @@
+{
+  "title": "1C Event Log - Simple Test",
+  "uid": "1c-event-log-simple",
+  "version": 1,
+  "schemaVersion": 27,
+  "tags": ["1c", "event-log", "test"],
+  "timezone": "browser",
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "refresh": "1m",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Events List (All)",
+      "type": "table",
+      "gridPos": {"h": 20, "w": 24, "x": 0, "y": 0},
+      "targets": [
+        {
+          "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
+          "rawSql": "SELECT\n  event_time AS \"Дата, время\",\n  user_name AS \"Пользователь\",\n  computer AS \"Компьютер\",\n  application_presentation AS \"Приложение\",\n  event_presentation AS \"Событие\",\n  level AS \"Уровень\",\n  comment AS \"Комментарий\"\nFROM logs.event_log\nORDER BY event_time DESC\nLIMIT 100",
+          "refId": "A",
+          "format": "table"
+        }
+      ]
+    }
+  ]
+}
+

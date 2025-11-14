@@ -39,16 +39,18 @@ services:
       - ${LOG_DIRS:-C:\Program Files\1cv8\srvinfo}:/mnt/logs:ro
       - ${TECHLOG_DIRS:-C:\ProgramData\1C\1Cv8\logs}:/mnt/techlog:ro
       - parser_offsets:/app/offsets
+      - ../../parser_debug:/app/debug
     environment:
-      LOG_DIRS: ${LOG_DIRS:-/mnt/logs}
-      TECHLOG_DIRS: ${TECHLOG_DIRS:-/mnt/techlog}
+      LOG_DIRS: /mnt/logs
+      TECHLOG_DIRS: /mnt/techlog
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: ${CLICKHOUSE_PORT:-9000}
       CLICKHOUSE_DB: ${CLICKHOUSE_DB:-logs}
       LOG_RETENTION_DAYS: ${LOG_RETENTION_DAYS:-30}
       READ_ONLY: ${READ_ONLY:-false}
       OFFSET_MIRROR: ${OFFSET_MIRROR:-false}
-      LOG_LEVEL: ${LOG_LEVEL:-info}
+      ENABLE_DEDUPLICATION: ${ENABLE_DEDUPLICATION:-false}
+      LOG_LEVEL: debug
     networks:
       - internal
     restart: unless-stopped
@@ -93,6 +95,7 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
       GF_INSTALL_PLUGINS: vertamedia-clickhouse-datasource
     networks:
+      - internal
       - monitoring
     restart: unless-stopped
 

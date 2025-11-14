@@ -13,23 +13,23 @@ import (
 
 // Reader reads 1C Event Log files (.lgf/.lgp)
 type Reader struct {
-	basePath     string
-	lgfPath      string
-	lgpFiles     []string
-	clusterGUID  string
-	infobaseGUID string
+	basePath      string
+	lgfPath       string
+	lgpFiles      []string
+	clusterGUID   string
+	clusterName   string
+	infobaseGUID  string
+	infobaseName  string
+	lgfReader     *LgfReader // For resolving user_id, computer_id, etc.
 	
 	currentFile *os.File
 	currentIdx  int
 	records     []*domain.EventLogRecord
 	recordIdx   int
-	
-	// For deduplication
-	seenEvents map[string]bool
 }
 
 // NewReader creates a new event log reader
-func NewReader(basePath, clusterGUID, infobaseGUID string) (*Reader, error) {
+func NewReader(basePath, clusterGUID, infobaseGUID, clusterName, infobaseName string) (*Reader, error) {
 	lgfPath := filepath.Join(basePath, "1Cv8.lgf")
 	
 	// Check if .lgf file exists
@@ -37,12 +37,17 @@ func NewReader(basePath, clusterGUID, infobaseGUID string) (*Reader, error) {
 		return nil, fmt.Errorf("lgf file not found: %s", lgfPath)
 	}
 	
+	// Create LGF reader for resolving user_id, computer_id, etc.
+	lgfReader := NewLgfReader(lgfPath)
+	
 	return &Reader{
 		basePath:     basePath,
 		lgfPath:      lgfPath,
 		clusterGUID:  clusterGUID,
+		clusterName:  clusterName,
 		infobaseGUID: infobaseGUID,
-		seenEvents:   make(map[string]bool),
+		infobaseName: infobaseName,
+		lgfReader:    lgfReader,
 		records:      make([]*domain.EventLogRecord, 0),
 	}, nil
 }
@@ -68,6 +73,13 @@ func (r *Reader) Open(ctx context.Context) error {
 
 // Read reads the next event log record
 func (r *Reader) Read(ctx context.Context) (*domain.EventLogRecord, error) {
+	// Check context cancellation
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	
 	// If no records loaded, parse next file
 	if len(r.records) == 0 || r.recordIdx >= len(r.records) {
 		if r.currentFile != nil {
@@ -82,29 +94,26 @@ func (r *Reader) Read(ctx context.Context) (*domain.EventLogRecord, error) {
 		if err := r.parseNextFile(); err != nil {
 			return nil, err
 		}
+		
+		// If still no records after parsing, try next file
+		if len(r.records) == 0 {
+			return r.Read(ctx)
+		}
 	}
 	
 	// Return next record
-	for r.recordIdx < len(r.records) {
+	if r.recordIdx < len(r.records) {
 		record := r.records[r.recordIdx]
 		r.recordIdx++
-		
-		// Check for duplicates
-		eventKey := fmt.Sprintf("%s_%d_%d",
-			record.EventTime.Format("2006-01-02T15:04:05.000000"),
-			record.SessionID,
-			record.ConnectionID)
-		
-		if r.seenEvents[eventKey] {
-			continue // Skip duplicate
-		}
-		
-		r.seenEvents[eventKey] = true
 		return record, nil
 	}
 	
-	// No more records in current file, try next
-	return r.Read(ctx)
+	// No more records in current file, try next (but limit recursion depth)
+	if r.currentIdx < len(r.lgpFiles) {
+		return r.Read(ctx)
+	}
+	
+	return nil, io.EOF
 }
 
 // Seek seeks to a specific position (file index)
@@ -150,8 +159,8 @@ func (r *Reader) parseNextFile() error {
 	
 	r.currentFile = file
 	
-	// Create parser and parse file
-	parser := NewLgpParser(r.clusterGUID, r.infobaseGUID)
+	// Create parser and parse file (pass LGF reader for resolution)
+	parser := NewLgpParser(r.clusterGUID, r.infobaseGUID, r.clusterName, r.infobaseName, r.lgfReader)
 	records, err := parser.Parse(file)
 	if err != nil {
 		file.Close()
@@ -162,9 +171,10 @@ func (r *Reader) parseNextFile() error {
 	r.recordIdx = 0
 	r.currentIdx++
 	
-	log.Debug().
-		Str("file", filePath).
+	log.Info().
+		Str("file", filepath.Base(filePath)).
 		Int("index", r.currentIdx-1).
+		Int("total_files", len(r.lgpFiles)).
 		Int("records", len(records)).
 		Msg("Parsed lgp file")
 	

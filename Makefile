@@ -18,6 +18,10 @@ build:
 	@go build -o bin/parser.exe ./cmd/parser
 	@echo "Building MCP server..."
 	@go build -o bin/mcp.exe ./cmd/mcp
+	@echo "Building extract_mxl utility..."
+	@go build -o bin/extract_mxl.exe ./cmd/extract_mxl
+	@echo "Building compare utility..."
+	@go build -o bin/compare.exe ./cmd/compare
 	@echo "Done!"
 
 test:

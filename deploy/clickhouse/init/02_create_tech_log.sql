@@ -23,10 +23,13 @@ CREATE TABLE IF NOT EXISTS logs.tech_log (
     raw_line String CODEC(ZSTD),
     -- Dynamic properties (all other fields from tech log)
     property_key Array(String) CODEC(ZSTD),
-    property_value Array(String) CODEC(ZSTD)
+    property_value Array(String) CODEC(ZSTD),
+    
+    -- Хеш записи для дедупликации
+    record_hash String CODEC(ZSTD)  -- SHA256 hash (64 hex characters)
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMMDD(ts)
-ORDER BY (cluster_guid, infobase_guid, name, ts)
+ORDER BY (cluster_guid, infobase_guid, name, ts, record_hash)
 TTL ts + INTERVAL 30 DAY
 SETTINGS index_granularity = 8192;
 
@@ -36,4 +39,5 @@ ALTER TABLE logs.tech_log ADD INDEX idx_level level TYPE set(0) GRANULARITY 4;
 ALTER TABLE logs.tech_log ADD INDEX idx_session session_id TYPE bloom_filter(0.01) GRANULARITY 4;
 ALTER TABLE logs.tech_log ADD INDEX idx_transaction transaction_id TYPE bloom_filter(0.01) GRANULARITY 4;
 ALTER TABLE logs.tech_log ADD INDEX idx_duration duration TYPE minmax GRANULARITY 4;
+ALTER TABLE logs.tech_log ADD INDEX idx_hash record_hash TYPE bloom_filter(0.01) GRANULARITY 4;
 

@@ -1,51 +1,57 @@
 {
-  "dashboard": {
-    "title": "1C Event Log - Activity",
-    "tags": ["1c", "event-log"],
-    "timezone": "browser",
-    "panels": [
-      {
-        "id": 1,
-        "title": "Events Timeline by Level",
-        "type": "graph",
-        "gridPos": {"h": 8, "w": 24, "x": 0, "y": 0},
-        "targets": [
-          {
-            "datasource": "ClickHouse",
-            "rawSql": "SELECT\n  toDateTime(event_time) AS time,\n  level,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\nGROUP BY time, level\nORDER BY time",
-            "refId": "A"
-          }
-        ]
-      },
-      {
-        "id": 2,
-        "title": "Events List",
-        "type": "table",
-        "gridPos": {"h": 12, "w": 24, "x": 0, "y": 8},
-        "targets": [
-          {
-            "datasource": "ClickHouse",
+  "title": "1C Event Log - Activity",
+  "uid": "1c-event-log-activity",
+  "version": 1,
+  "schemaVersion": 27,
+  "tags": ["1c", "event-log"],
+  "timezone": "browser",
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "refresh": "1m",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Events Timeline by Level",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 0},
+      "targets": [
+        {
+          "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
+            "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(event_time), 300) * 300) AS time,\n  level,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\nGROUP BY time, level\nORDER BY time",
+          "refId": "A",
+          "format": "time_series"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Events List",
+      "type": "table",
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 8},
+      "targets": [
+        {
+          "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
             "rawSql": "SELECT\n  event_time AS \"Дата, время\",\n  data_separation AS \"Разделение данных сеанса\",\n  user_name AS \"Пользователь\",\n  computer AS \"Компьютер\",\n  application_presentation AS \"Приложение\",\n  event_presentation AS \"Событие\",\n  transaction_status AS \"Статус транзакции\",\n  metadata_presentation AS \"Метаданные\"\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\nORDER BY event_time DESC\nLIMIT 1000",
-            "refId": "A"
-          }
-        ]
-      },
-      {
-        "id": 3,
-        "title": "Events by Type",
-        "type": "piechart",
-        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 20},
-        "targets": [
-          {
-            "datasource": "ClickHouse",
+          "refId": "A",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Events by Type",
+      "type": "piechart",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 20},
+      "targets": [
+        {
+          "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
             "rawSql": "SELECT\n  event_presentation AS event,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\nGROUP BY event\nORDER BY count DESC\nLIMIT 10",
-            "refId": "A"
-          }
-        ]
-      }
-    ],
-    "time": {"from": "now-6h", "to": "now"},
-    "refresh": "1m"
-  }
+          "refId": "A",
+          "format": "table"
+        }
+      ]
+    }
+  ]
 }
-

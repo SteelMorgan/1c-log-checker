@@ -43,7 +43,7 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to create parser service")
 	}
-
+	
 	// Setup graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -73,6 +73,7 @@ func main() {
 	log.Info().Msg("Shutting down gracefully...")
 	cancel()
 
+	// Ensure cleanup happens (defer will also run, but explicit call is clearer)
 	if err := parserSvc.Stop(); err != nil {
 		log.Error().Err(err).Msg("Error during shutdown")
 	}

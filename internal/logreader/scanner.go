@@ -11,11 +11,13 @@ import (
 
 // LogLocation represents a discovered log location
 type LogLocation struct {
-	BasePath     string // Path to 1Cv8Log directory
-	ClusterGUID  string // Extracted from path
-	InfobaseGUID string // Extracted from path
-	LgfFile      string // Path to 1Cv8.lgf
-	LgpFiles     []string // Paths to .lgp files
+	BasePath      string // Path to 1Cv8Log directory
+	ClusterGUID   string // Extracted from path
+	ClusterName   string // Cluster name from 1CV8Clst.lst
+	InfobaseGUID  string // Extracted from path
+	InfobaseName  string // Infobase name from cluster_map.yaml (if available)
+	LgfFile       string // Path to 1Cv8.lgf
+	LgpFiles      []string // Paths to .lgp files
 }
 
 // ScanForLogs recursively scans directories for 1C event log files
@@ -97,20 +99,41 @@ func extractLogLocation(lgfPath string) (*LogLocation, error) {
 		return nil, fmt.Errorf("invalid infobase GUID format: %s", infobaseGUID)
 	}
 	
-	// Extract cluster GUID from 1CV8Clst.lst file
+	// Extract cluster GUID, name and infobase name from 1CV8Clst.lst file
 	regDir := filepath.Dir(parentDir)
-	clusterGUID, err := GetClusterGUIDForReg(regDir)
+	clusterFileData, err := ReadClusterFileData(regDir)
+	var clusterGUID, clusterName, infobaseName string
 	if err != nil {
 		log.Warn().
 			Err(err).
 			Str("reg_dir", regDir).
-			Msg("Failed to get cluster GUID, using reg_<port> as fallback")
+			Msg("Failed to get cluster info, using reg_<port> as fallback")
 		
 		regName := filepath.Base(regDir)
 		if strings.HasPrefix(strings.ToLower(regName), "reg_") {
 			clusterGUID = regName
+			clusterName = regName
 		} else {
 			clusterGUID = "unknown"
+			clusterName = "unknown"
+		}
+		infobaseName = ""
+	} else {
+		clusterGUID = clusterFileData.Cluster.GUID
+		clusterName = clusterFileData.Cluster.Name
+		
+		// Try to get infobase name from 1CV8Clst.lst
+		if infobase, ok := clusterFileData.Infobases[infobaseGUID]; ok {
+			infobaseName = infobase.Name
+			log.Debug().
+				Str("infobase_guid", infobaseGUID).
+				Str("infobase_name", infobaseName).
+				Msg("Found infobase name in 1CV8Clst.lst")
+		} else {
+			log.Debug().
+				Str("infobase_guid", infobaseGUID).
+				Msg("Infobase GUID not found in 1CV8Clst.lst, name will be empty")
+			infobaseName = ""
 		}
 	}
 	
@@ -124,7 +147,9 @@ func extractLogLocation(lgfPath string) (*LogLocation, error) {
 	location := &LogLocation{
 		BasePath:     basePath,
 		ClusterGUID:  clusterGUID,
+		ClusterName:  clusterName,
 		InfobaseGUID: infobaseGUID,
+		InfobaseName: infobaseName,
 		LgfFile:      lgfPath,
 		LgpFiles:     lgpFiles,
 	}
