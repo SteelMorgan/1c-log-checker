@@ -35,11 +35,14 @@ type EventLogRecord struct {
 
 	// Сеанс и соединение
 	SessionID    uint64 // Сеанс (номер)
-	ConnectionID uint64 // Соединение
+	Connection   string // Соединение (строка, не ID)
+	ConnectionID uint64 // Соединение (ID, из транзакции)
 
 	// Транзакция
-	TransactionStatus string // Статус транзакции (Зафиксирована, Отменена, Не завершена)
-	TransactionID     string // Идентификатор транзакции
+	TransactionStatus   string    // Статус транзакции (Зафиксирована, Отменена, Не завершена)
+	TransactionID       string    // Идентификатор транзакции
+	TransactionNumber   int64     // Номер транзакции (из hex)
+	TransactionDateTime time.Time // Дата и время транзакции
 
 	// Разделение данных сеанса
 	DataSeparation string // Разделение данных сеанса (0, 1, ...)
