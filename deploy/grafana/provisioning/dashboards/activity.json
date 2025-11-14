@@ -51,7 +51,7 @@
       "targets": [
         {
           "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
-          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(event_time), 300) * 300) AS time,\n  level,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ($infobase = '$__all' OR infobase_name IN ($infobase))\n  AND ($user = '$__all' OR user_name IN ($user))\nGROUP BY time, level\nORDER BY time",
+          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(event_time), 300) * 300) AS time,\n  level,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ('$infobase' = '$__all' OR infobase_name = '' OR infobase_name IN ($infobase))\n  AND ('$user' = '$__all' OR user_name = '' OR user_name IN ($user))\nGROUP BY time, level\nORDER BY time",
           "refId": "A",
           "format": "time_series"
         }
@@ -78,7 +78,7 @@
       "targets": [
         {
           "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
-          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(event_time), 300) * 300) AS time,\n  event_presentation AS event,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ($infobase = '$__all' OR infobase_name IN ($infobase))\n  AND ($user = '$__all' OR user_name IN ($user))\nGROUP BY time, event\nORDER BY time, count DESC\nLIMIT 10",
+          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(event_time), 300) * 300) AS time,\n  event_presentation AS event,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ('$infobase' = '$__all' OR infobase_name = '' OR infobase_name IN ($infobase))\n  AND ('$user' = '$__all' OR user_name = '' OR user_name IN ($user))\nGROUP BY time, event\nORDER BY time, count DESC\nLIMIT 10",
           "refId": "A",
           "format": "time_series"
         }
@@ -100,7 +100,7 @@
       "targets": [
         {
           "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
-          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(event_time), 300) * 300) AS time,\n  user_name AS user,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ($infobase = '$__all' OR infobase_name IN ($infobase))\n  AND ($user = '$__all' OR user_name IN ($user))\n  AND user_name != ''\nGROUP BY time, user\nORDER BY time, count DESC\nLIMIT 10",
+          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(event_time), 300) * 300) AS time,\n  user_name AS user,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ('$infobase' = '$__all' OR infobase_name = '' OR infobase_name IN ($infobase))\n  AND ('$user' = '$__all' OR user_name = '' OR user_name IN ($user))\n  AND user_name != ''\nGROUP BY time, user\nORDER BY time, count DESC\nLIMIT 10",
           "refId": "A",
           "format": "time_series"
         }
@@ -122,7 +122,7 @@
       "targets": [
         {
           "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
-          "rawSql": "SELECT\n  event_presentation AS event,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ($infobase = '$__all' OR infobase_name IN ($infobase))\n  AND ($user = '$__all' OR user_name IN ($user))\nGROUP BY event\nORDER BY count DESC\nLIMIT 15",
+          "rawSql": "SELECT\n  event_presentation AS event,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ('$infobase' = '$__all' OR infobase_name = '' OR infobase_name IN ($infobase))\n  AND ('$user' = '$__all' OR user_name = '' OR user_name IN ($user))\nGROUP BY event\nORDER BY count DESC\nLIMIT 15",
           "refId": "A",
           "format": "table"
         }
@@ -146,7 +146,7 @@
       "targets": [
         {
           "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
-          "rawSql": "SELECT\n  event_time AS \"Дата, время\",\n  data_separation AS \"Разделение данных сеанса\",\n  user_name AS \"Пользователь\",\n  computer AS \"Компьютер\",\n  application_presentation AS \"Приложение\",\n  event_presentation AS \"Событие\",\n  transaction_status AS \"Статус транзакции\",\n  metadata_presentation AS \"Метаданные\"\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ($infobase = '$__all' OR infobase_name IN ($infobase))\n  AND ($user = '$__all' OR user_name IN ($user))\nORDER BY event_time DESC\nLIMIT 1000",
+          "rawSql": "SELECT\n  event_time AS \"Дата, время\",\n  data_separation AS \"Разделение данных сеанса\",\n  user_name AS \"Пользователь\",\n  computer AS \"Компьютер\",\n  application_presentation AS \"Приложение\",\n  event_presentation AS \"Событие\",\n  transaction_status AS \"Статус транзакции\",\n  metadata_presentation AS \"Метаданные\"\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ('$infobase' = '$__all' OR infobase_name = '' OR infobase_name IN ($infobase))\n  AND ('$user' = '$__all' OR user_name = '' OR user_name IN ($user))\nORDER BY event_time DESC\nLIMIT 1000",
           "refId": "A",
           "format": "table"
         }
