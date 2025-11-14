@@ -2,7 +2,7 @@
   "title": "1C Event Log - Activity",
   "uid": "1c-event-log-activity",
   "version": 1,
-  "schemaVersion": 27,
+  "schemaVersion": 38,
   "tags": ["1c", "event-log"],
   "timezone": "browser",
   "time": {
@@ -10,48 +10,156 @@
     "to": "now"
   },
   "refresh": "1m",
+  "templating": {
+    "list": [
+      {
+        "name": "infobase",
+        "type": "query",
+        "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
+        "query": "SELECT DISTINCT infobase_name FROM logs.event_log WHERE infobase_name != '' ORDER BY infobase_name",
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": "$__all"
+        },
+        "includeAll": true,
+        "multi": true,
+        "allValue": null
+      },
+      {
+        "name": "user",
+        "type": "query",
+        "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
+        "query": "SELECT DISTINCT user_name FROM logs.event_log WHERE user_name != '' ORDER BY user_name",
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": "$__all"
+        },
+        "includeAll": true,
+        "multi": true,
+        "allValue": null
+      }
+    ]
+  },
   "panels": [
     {
       "id": 1,
       "title": "Events Timeline by Level",
       "type": "timeseries",
-      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 0},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
       "targets": [
         {
           "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
-            "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(event_time), 300) * 300) AS time,\n  level,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\nGROUP BY time, level\nORDER BY time",
+          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(event_time), 300) * 300) AS time,\n  level,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ($infobase = '$__all' OR infobase_name IN ($infobase))\n  AND ($user = '$__all' OR user_name IN ($user))\nGROUP BY time, level\nORDER BY time",
           "refId": "A",
           "format": "time_series"
         }
-      ]
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "fillOpacity": 10
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": []
+        }
+      }
     },
     {
       "id": 2,
-      "title": "Events List",
-      "type": "table",
-      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 8},
+      "title": "Events Timeline by Event Type",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
       "targets": [
         {
           "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
-            "rawSql": "SELECT\n  event_time AS \"Дата, время\",\n  data_separation AS \"Разделение данных сеанса\",\n  user_name AS \"Пользователь\",\n  computer AS \"Компьютер\",\n  application_presentation AS \"Приложение\",\n  event_presentation AS \"Событие\",\n  transaction_status AS \"Статус транзакции\",\n  metadata_presentation AS \"Метаданные\"\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\nORDER BY event_time DESC\nLIMIT 1000",
+          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(event_time), 300) * 300) AS time,\n  event_presentation AS event,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ($infobase = '$__all' OR infobase_name IN ($infobase))\n  AND ($user = '$__all' OR user_name IN ($user))\nGROUP BY time, event\nORDER BY time, count DESC\nLIMIT 10",
           "refId": "A",
-          "format": "table"
+          "format": "time_series"
         }
-      ]
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth"
+          }
+        }
+      }
     },
     {
       "id": 3,
-      "title": "Events by Type",
-      "type": "piechart",
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 20},
+      "title": "Events Timeline by User",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
       "targets": [
         {
           "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
-            "rawSql": "SELECT\n  event_presentation AS event,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\nGROUP BY event\nORDER BY count DESC\nLIMIT 10",
+          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(event_time), 300) * 300) AS time,\n  user_name AS user,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ($infobase = '$__all' OR infobase_name IN ($infobase))\n  AND ($user = '$__all' OR user_name IN ($user))\n  AND user_name != ''\nGROUP BY time, user\nORDER BY time, count DESC\nLIMIT 10",
+          "refId": "A",
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth"
+          }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Events Distribution by Type",
+      "type": "piechart",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "targets": [
+        {
+          "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
+          "rawSql": "SELECT\n  event_presentation AS event,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ($infobase = '$__all' OR infobase_name IN ($infobase))\n  AND ($user = '$__all' OR user_name IN ($user))\nGROUP BY event\nORDER BY count DESC\nLIMIT 15",
           "refId": "A",
           "format": "table"
         }
-      ]
+      ],
+      "options": {
+        "pieType": "pie",
+        "tooltip": {
+          "mode": "single"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "right"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Events List",
+      "type": "table",
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 16},
+      "targets": [
+        {
+          "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
+          "rawSql": "SELECT\n  event_time AS \"Дата, время\",\n  data_separation AS \"Разделение данных сеанса\",\n  user_name AS \"Пользователь\",\n  computer AS \"Компьютер\",\n  application_presentation AS \"Приложение\",\n  event_presentation AS \"Событие\",\n  transaction_status AS \"Статус транзакции\",\n  metadata_presentation AS \"Метаданные\"\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ($infobase = '$__all' OR infobase_name IN ($infobase))\n  AND ($user = '$__all' OR user_name IN ($user))\nORDER BY event_time DESC\nLIMIT 1000",
+          "refId": "A",
+          "format": "table"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Дата, время"
+          }
+        ]
+      }
     }
   ]
 }
