@@ -12,5 +12,7 @@ datasources:
     jsonData:
       defaultDatabase: logs
       usePOST: false
+      port: 8123
+      server: clickhouse
     editable: false
 

@@ -1,0 +1,5 @@
+FROM grafana/grafana:latest
+
+# Install ClickHouse datasource plugin
+RUN grafana-cli plugins install vertamedia-clickhouse-datasource
+
