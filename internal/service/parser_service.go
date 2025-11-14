@@ -169,7 +169,8 @@ func (s *ParserService) Stop() error {
 
 // runEventLogReader runs an event log reader for a location
 func (s *ParserService) runEventLogReader(ctx context.Context, location logreader.LogLocation) {
-	startTime := time.Now()
+	// Start timing for entire parsing process (from file read to ClickHouse write)
+	parsingStartTime := time.Now()
 	
 	log.Info().
 		Str("cluster_guid", location.ClusterGUID).
@@ -225,7 +226,26 @@ func (s *ParserService) runEventLogReader(ctx context.Context, location logreade
 				
 				// End of stream - in READ_ONLY mode, we're done
 				if s.cfg.ReadOnly {
-					log.Info().Msg("Reached end of log files (READ_ONLY mode, exiting)")
+					// Flush any remaining records before calculating final stats
+					if s.writer != nil {
+						if err := s.writer.Flush(ctx); err != nil {
+							log.Error().Err(err).Msg("Failed to flush writer at end of parsing")
+						}
+					}
+					
+					// Calculate total parsing time (from file read to ClickHouse write completion)
+					totalParsingTime := time.Since(parsingStartTime)
+					totalRecords := s.debugCount
+					recordsPerSec := float64(totalRecords) / totalParsingTime.Seconds()
+					
+					log.Info().
+						Str("cluster_name", location.ClusterName).
+						Str("infobase_name", location.InfobaseName).
+						Int("lgp_files", len(location.LgpFiles)).
+						Dur("total_parsing_time", totalParsingTime).
+						Int64("total_records_parsed", totalRecords).
+						Float64("records_per_second", recordsPerSec).
+						Msg("Parsing completed: All records processed and written to ClickHouse")
 					return
 				}
 				// In live mode, wait a bit and continue
@@ -251,7 +271,7 @@ func (s *ParserService) runEventLogReader(ctx context.Context, location logreade
 				} else {
 					s.debugCount++
 					if s.debugCount%50 == 0 {
-						elapsed := time.Since(startTime)
+						elapsed := time.Since(parsingStartTime)
 						recordsPerSec := float64(s.debugCount) / elapsed.Seconds()
 						log.Info().
 							Int64("debug_records", s.debugCount).
