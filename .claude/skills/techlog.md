@@ -260,6 +260,50 @@ When using MCP tool `disable_techlog`, it writes this configuration to logcfg.xm
 - After enabling techlog for investigation
 - Before querying logs (allows parser to finish)
 - As temporary state before restoring original config
+
+---
+
+### 📋 Template: Minimal Debug Configuration
+
+When parser timeout occurs and user had NO original config, use this minimal configuration for debugging:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<config xmlns="http://v8.1c.ru/v8/tech-log">
+    <dump create="false"/>
+    <log location="D:\1CLogs\Debug" history="12" rotation="period" compress="zip">
+        <!-- Only rare events - minimal system load -->
+        <event>
+            <eq property="name" value="excp"/>
+        </event>
+        <event>
+            <eq property="name" value="conn"/>
+        </event>
+        <event>
+            <eq property="name" value="proc"/>
+        </event>
+        <property name="all"/>
+    </log>
+</config>
+```
+
+**Characteristics:**
+- **Events:** EXCP, CONN, PROC only (rare events, occur naturally)
+- **Load:** Minimal - these events are infrequent
+- **Purpose:** Generate some data for parser testing without stressing system
+- **Safe:** Can be left enabled during parser investigation
+- **Duration:** 12 hours history (short-term debugging)
+
+**When to use:**
+- Parser timeout occurred
+- User had NO original techlog config
+- Need test data to debug parser issues
+- Want minimal impact on production system
+
+**Not for:**
+- Production monitoring (too limited)
+- Performance analysis (no DB events)
+- Lock analysis (no TLOCK events)
 ```
 
 ### Example: Investigating Deadlock Error
@@ -309,9 +353,9 @@ AGENT WORKFLOW:
        WAIT 5 seconds
 
    IF not ready:
-     ERROR: "Parser timeout after 50 seconds!"
+     HANDLE TIMEOUT (see below)
 
-9. Query logs:
+9. IF logs ready: Query logs:
    Call get_tech_log with:
    - from: 10 minutes ago
    - to: now
@@ -334,6 +378,35 @@ AGENT WORKFLOW:
      ✅ Techlog restored to original state.
 
      You can safely continue. Your previous settings are preserved."
+
+--- ALTERNATIVE PATH: If timeout in step 8 ---
+
+8a. TIMEOUT HANDLING:
+    "⚠️ CRITICAL: Parser timeout after 50 seconds!"
+    "   Target: 2025-11-15T14:23:45Z"
+    "   Actual: 2025-11-15T14:23:20Z"
+    "   Gap: 25 seconds"
+
+8b. CHECK if user had original config:
+    IF saved_config exists:
+      → Strategy A: Restore original config
+        "You had custom techlog configured."
+        "Restoring it - we can use its data for debugging."
+        Restore saved config
+        Guide user to check parser logs
+
+    ELSE:
+      → Strategy B: Create minimal debug config
+        "Creating minimal debug configuration..."
+        "Events: EXCP, CONN, PROC (low overhead)"
+        Write minimal debug config
+        Guide user to investigate parser issue
+
+8c. INFORM user:
+    "⚠️ Original investigation logs NOT retrieved!"
+    "   After fixing parser, re-run your test."
+
+    Exit workflow (analysis incomplete)
 ```
 
 ### Example: Investigating Slow Performance
@@ -480,6 +553,90 @@ def wait_for_logs_ready(target_timestamp):
     error(f"   Gap: {calculate_gap(target_timestamp, actual_timestamp)}")
     error(f"   Investigation needed: Check parser logs, ClickHouse status")
     return False
+
+
+def handle_parser_timeout(original_config_exists, saved_config):
+    """
+    Handle timeout when parser doesn't process logs.
+
+    Two strategies depending on whether user had original config.
+    """
+
+    warn("⚠️ CRITICAL: Logs not received within timeout period!")
+    warn("   This indicates a problem with the log parser or ClickHouse.")
+    warn("")
+
+    if original_config_exists:
+        # Strategy A: User had custom config - use it for debugging
+        say("🔧 Debugging Strategy A: Use your existing techlog data")
+        say("")
+        say("You had a custom techlog configuration before our investigation.")
+        say("Let's restore it and use its data to debug the parser issue:")
+        say("")
+        say("1. Restoring your original techlog configuration...")
+        restore_config(saved_config)
+        say("   ✅ Original config restored")
+        say("")
+        say("2. Your techlog will continue generating data")
+        say("   We can use this data to investigate the parser issue")
+        say("")
+        say("3. Next steps:")
+        say("   - Check parser container logs: docker logs log-parser")
+        say("   - Check ClickHouse connectivity")
+        say("   - Verify parser is processing your techlog files")
+        say("   - Once parser fixed, we can retry the investigation")
+
+    else:
+        # Strategy B: User had no config - create minimal debug config
+        say("🔧 Debugging Strategy B: Create minimal techlog for debugging")
+        say("")
+        say("You didn't have techlog configured before.")
+        say("Let's create a minimal configuration to debug the parser:")
+        say("")
+
+        minimal_debug_config = """<?xml version="1.0" encoding="UTF-8"?>
+<config xmlns="http://v8.1c.ru/v8/tech-log">
+    <dump create="false"/>
+    <log location="D:\\1CLogs\\Debug" history="12" rotation="period" compress="zip">
+        <!-- Only rare events - minimal system load -->
+        <event>
+            <eq property="name" value="excp"/>
+        </event>
+        <event>
+            <eq property="name" value="conn"/>
+        </event>
+        <event>
+            <eq property="name" value="proc"/>
+        </event>
+        <property name="all"/>
+    </log>
+</config>"""
+
+        say("Creating minimal debug configuration:")
+        say("- Events: EXCP, CONN, PROC (rare, low overhead)")
+        say("- History: 12 hours")
+        say("- Location: D:\\1CLogs\\Debug")
+        say("- Rotation: enabled, compression: enabled")
+        say("")
+
+        write_config(minimal_debug_config)
+        say("✅ Minimal debug config created")
+        say("")
+        say("This configuration:")
+        say("✅ Minimal system load (only rare events)")
+        say("✅ Will generate some data for parser testing")
+        say("✅ Safe to leave enabled during investigation")
+        say("")
+        say("Next steps:")
+        say("1. Wait 5-10 minutes for events to accumulate")
+        say("2. Check parser logs: docker logs log-parser")
+        say("3. Verify files appear in D:\\1CLogs\\Debug")
+        say("4. Check if parser processes these files")
+        say("5. Once parser works, disable this config and retry investigation")
+
+    say("")
+    say("⚠️ IMPORTANT: Original investigation logs NOT retrieved!")
+    say("   After fixing parser, you may need to re-run your test/action.")
 ```
 
 **Two scenarios:**
