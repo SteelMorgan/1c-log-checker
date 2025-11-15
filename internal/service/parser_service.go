@@ -68,11 +68,21 @@ func NewParserService(cfg *config.Config) (*ParserService, error) {
 		})
 	}
 
-	// Open debug file for saving all parsed records
-	debugFile, err := os.OpenFile("/app/debug/parser_all_records.jsonl", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-	if err != nil {
-		log.Warn().Err(err).Msg("Failed to open debug file, records won't be saved")
-		debugFile = nil
+	// Open debug file for saving all parsed records (only if enabled)
+	var debugFile *os.File
+	debugEnabled := os.Getenv("DEBUG_SAVE_ALL_RECORDS")
+	if debugEnabled == "true" || debugEnabled == "1" {
+		debugFile, err = os.OpenFile("/app/debug/parser_all_records.jsonl", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+		if err != nil {
+			log.Warn().Err(err).Msg("Failed to open debug file, records won't be saved")
+			debugFile = nil
+		} else {
+			log.Info().
+				Str("file", "parser_all_records.jsonl").
+				Msg("Debug mode enabled: All parsed records will be saved")
+		}
+	} else {
+		log.Debug().Msg("Debug save disabled (DEBUG_SAVE_ALL_RECORDS not set)")
 	}
 
 	return &ParserService{
