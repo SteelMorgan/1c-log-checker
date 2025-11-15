@@ -50,6 +50,7 @@ services:
       READ_ONLY: ${READ_ONLY:-false}
       OFFSET_MIRROR: ${OFFSET_MIRROR:-false}
       ENABLE_DEDUPLICATION: ${ENABLE_DEDUPLICATION:-false}
+      DEBUG_SAVE_ALL_RECORDS: ${DEBUG_SAVE_ALL_RECORDS:-false}
       LOG_LEVEL: debug
     networks:
       - internal
