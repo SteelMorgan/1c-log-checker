@@ -73,6 +73,349 @@ Leaving techlog enabled can cause disk overflow and performance degradation.
 
 ---
 
+## 🔴 CRITICAL WORKFLOW - HOW TO WORK WITH TECHLOG
+
+**⚠️ THIS IS THE CORRECT PROCESS - FOLLOW THIS SEQUENCE STRICTLY! ⚠️**
+
+The techlog workflow is NOT "enable and leave running". It's a **cycle**: enable → wait/action → **disable** → wait for parsing → query logs → analyze → **verify cleanup**.
+
+### Standard Workflow (Passive Monitoring)
+
+Use when investigating sporadic issues that may occur naturally:
+
+```
+1. SAVE original configuration (if exists)
+   └─> Read current logcfg.xml file (if exists)
+   └─> Store content for restoration later
+   └─> If file doesn't exist: Remember "no config" state
+
+2. ENABLE techlog
+   └─> Call MCP tool: configure_techlog
+   └─> Or: Create logcfg.xml file
+
+3. WAIT for target event to occur
+   └─> Monitor user actions
+   └─> Wait for error to reproduce
+   └─> Duration: minutes to hours (NOT days!)
+
+4. DISABLE techlog IMMEDIATELY
+   └─> Call MCP tool: disable_techlog
+   └─> This writes disabled config to logcfg.xml
+   └─> Critical: DO NOT skip this step!
+
+5. WAIT ~10 seconds for parser to process logs
+   └─> Parser needs time to read and load data to ClickHouse
+   └─> Typical: 5-15 seconds depending on log volume
+   └─> Inform user: "Waiting for log parser to process data..."
+
+6. QUERY logs via MCP tools
+   └─> Call get_tech_log with time range
+   └─> Analyze results
+
+7. ANALYZE and present findings
+
+8. RESTORE original configuration
+   └─> If original had config: Restore saved content
+   └─> If original had no config: Delete logcfg.xml
+   └─> Returns system to pre-investigation state
+   └─> User's original settings are preserved!
+
+9. ✅ MANDATORY FINAL CHECK - Verify restoration:
+   └─> Confirm: Original config restored successfully
+   └─> EXPLICITLY state to user: "Techlog restored to original state"
+   └─> Or if was disabled: "Techlog disabled (was not configured before)"
+```
+
+### Active Testing Workflow (Unit Tests)
+
+Use when investigating specific reproducible errors:
+
+```
+1. SAVE original configuration (if exists)
+   └─> Read current logcfg.xml file (if exists)
+   └─> Store content for restoration later
+   └─> If file doesn't exist: Remember "no config" state
+
+2. PREPARE unit test that triggers the issue
+   └─> Create or identify existing test
+   └─> Ensure test reproduces the error reliably
+
+3. ENABLE techlog with specific filters
+   └─> Call MCP tool: configure_techlog
+   └─> Use narrow filters for the specific event type
+   └─> Example: EXCP for exceptions, DBMSSQL for SQL errors
+
+4. RUN unit test to trigger the event
+   └─> Execute test in 1C
+   └─> Wait for test completion
+   └─> Duration: seconds to minutes
+
+5. DISABLE techlog IMMEDIATELY after test completes
+   └─> Call MCP tool: disable_techlog
+   └─> This writes disabled config to logcfg.xml
+   └─> Critical: DO NOT leave enabled between test runs!
+
+6. WAIT ~10 seconds for parser to process logs
+   └─> Parser processes techlog files
+   └─> Loads data into ClickHouse database
+   └─> Say: "Waiting 10 seconds for parser..."
+
+7. QUERY logs via MCP tools
+   └─> Call get_tech_log with time range covering the test
+   └─> Use narrow time window (e.g., last 5 minutes)
+
+8. ANALYZE results and present findings
+
+9. RESTORE original configuration
+   └─> If original had config: Restore saved content
+   └─> If original had no config: Delete logcfg.xml
+   └─> Returns system to pre-investigation state
+
+10. ✅ MANDATORY FINAL CHECK - Verify restoration:
+    ├─> Confirm original config restored successfully
+    ├─> If need more tests: Keep original saved, repeat from step 3!
+    ├─> When all testing done: Original config must be restored
+    └─> Tell user: "Techlog restored to original state"
+```
+
+### 🔴 MANDATORY POST-ANALYSIS CHECKLIST
+
+**After completing ANY techlog analysis, you MUST perform this check:**
+
+```
+□ Analysis complete and results presented to user?
+  └─> If NO: Continue analysis
+  └─> If YES: Proceed to next check ↓
+
+□ Was original configuration saved at the start?
+  ├─> Check saved config variable/content
+  └─> If NOT saved: CRITICAL ERROR! Cannot restore!
+
+□ Is original configuration RESTORED?
+  ├─> Check 1: If original had config → Restored saved content?
+  ├─> Check 2: If original had NO config → Deleted logcfg.xml?
+  └─> If NOT restored: CRITICAL ERROR! Restore NOW!
+
+□ User explicitly informed about restoration?
+  └─> Say: "✅ Techlog restored to original state" OR
+  └─> Say: "✅ Techlog disabled (was not configured before)" OR
+  └─> Say: "✅ Your original techlog settings have been restored"
+
+□ If investigation continues (need more data):
+  └─> Keep original config saved (don't lose it!)
+  └─> Re-enable techlog for next iteration
+  └─> After final iteration: RESTORE original config
+```
+
+**Template final message:**
+```
+Analysis complete!
+
+Findings:
+[Your analysis here]
+
+✅ Techlog status: RESTORED to original state
+   Your previous techlog settings have been restored.
+   [Or: Techlog is DISABLED (was not configured before)]
+
+   System is back to normal state.
+```
+
+---
+
+### 📋 Template: Disabled Techlog Configuration
+
+When using MCP tool `disable_techlog`, it writes this configuration to logcfg.xml:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<config xmlns="http://v8.1c.ru/v8/tech-log">
+    <dump create="false"/>
+</config>
+```
+
+**What this does:**
+- Explicitly disables all techlog events
+- No events will be logged
+- Minimal file size (3 lines)
+- Safe to use during 10-second parser wait
+
+**When to use:**
+- After enabling techlog for investigation
+- Before querying logs (allows parser to finish)
+- As temporary state before restoring original config
+```
+
+### Example: Investigating Deadlock Error
+
+```
+USER: "We're getting deadlock errors in Document.SalesOrder.BeforeWrite()"
+
+AGENT WORKFLOW:
+
+1. Save original config:
+   Read logcfg.xml → Store content
+   [If file doesn't exist: Remember "no config"]
+
+2. Understand: Need to capture TDEADLOCK events
+
+3. Prepare:
+   "I'll configure techlog to capture deadlock events.
+    Do you have a unit test that reproduces this?"
+   User: "Yes, Test_SalesOrder_ConcurrentWrite"
+
+4. Configure techlog (Template 2: Lock Analysis):
+   Call configure_techlog with:
+   - cluster_guid, infobase_guid from cluster_map.yaml
+   - Config: TLOCK, TTIMEOUT, TDEADLOCK events
+   - history="2"
+
+5. Inform:
+   "✅ Techlog enabled for deadlock capture.
+    Please run Test_SalesOrder_ConcurrentWrite now."
+
+6. Wait for user: "Test completed, got the error"
+
+7. IMMEDIATELY disable:
+   Call disable_techlog
+   Say: "Disabling techlog..."
+
+8. Wait for parser:
+   "Waiting 10 seconds for log parser to process data..."
+   [Wait 10 seconds]
+
+9. Query logs:
+   Call get_tech_log with:
+   - from: 10 minutes ago
+   - to: now
+   - events: ["TDEADLOCK", "TTIMEOUT", "TLOCK"]
+
+10. Analyze and present:
+    "Found deadlock at 14:23:45:
+     - Transaction A locked Table _AccumReg123
+     - Transaction B locked Table _Document234
+     - Both waiting for each other's locks
+
+     Root cause: ..."
+
+11. RESTORE original config:
+    Write saved content back to logcfg.xml
+    [Or delete if was "no config"]
+
+12. ✅ MANDATORY FINAL CHECK:
+    "✅ Analysis complete!
+     ✅ Techlog restored to original state.
+
+     You can safely continue. Your previous settings are preserved."
+```
+
+### Example: Investigating Slow Performance
+
+```
+USER: "System is slow when generating Report.SalesAnalysis"
+
+AGENT WORKFLOW:
+
+1. Save original config:
+   Read logcfg.xml → Store content
+   [If file doesn't exist: Remember "no config"]
+
+2. No unit test needed (user will run manually)
+
+3. Configure techlog (Template 3: Performance):
+   Call configure_techlog with:
+   - Config: DBMSSQL + SDBL with duration > 1 second
+   - history="2"
+
+4. Inform user:
+   "✅ Techlog enabled to capture slow queries.
+    Please run the Sales Analysis report now.
+    Tell me when it completes."
+
+5. Wait for user: "Report finished, took 45 seconds"
+
+6. IMMEDIATELY disable:
+   Call disable_techlog
+   Say: "Disabling techlog..."
+
+7. Wait for parser:
+   "Waiting 10 seconds for parser to process logs..."
+   [Actual wait: 10 seconds]
+
+8. Query logs:
+   Call get_tech_log with:
+   - from: 5 minutes ago
+   - to: now
+   - events: ["DBMSSQL", "SDBL"]
+
+9. Analyze:
+   "Found 3 slow queries:
+    1. SELECT from _AccumReg123 - 12 seconds, no index
+    2. JOIN across 5 tables - 8 seconds
+    3. Subquery in WHERE - 6 seconds
+
+    Recommendations: ..."
+
+10. RESTORE original config:
+    Write saved content back to logcfg.xml
+    [Or delete if was "no config"]
+
+11. ✅ MANDATORY FINAL CHECK:
+    "✅ Analysis complete!
+     ✅ Techlog restored to original state.
+
+     Implement the recommendations above.
+     Re-enable techlog after optimizations to verify improvement."
+```
+
+### Anti-Pattern: What NOT to Do
+
+❌ **WRONG - Leaving enabled continuously:**
+```
+1. Enable techlog
+2. Tell user: "Techlog is running, it will capture events"
+3. [Leave enabled for hours/days]
+4. User reports issue later
+5. Query logs
+6. ❌ Never verified if techlog is still enabled!
+```
+**Problems:**
+- Disk fills up
+- Performance degrades
+- Logs contain too much noise
+- User forgets it's enabled
+
+✅ **CORRECT - Targeted cycles with verification:**
+```
+1. Enable techlog
+2. Capture event (minutes, not hours)
+3. DISABLE immediately
+4. Wait 10 seconds
+5. Query and analyze
+6. ✅ VERIFY techlog is disabled
+7. Inform user explicitly
+```
+
+### Critical Timing Rules
+
+**⚠️ NEVER skip these waits:**
+
+1. **After DISABLE, before QUERY: Wait 10 seconds minimum**
+   - Parser reads techlog files on schedule
+   - ClickHouse needs time to index data
+   - Querying immediately = incomplete/missing data
+
+2. **After ENABLE, before ACTION: Wait 1-2 seconds**
+   - Platform needs time to apply logcfg.xml
+   - Ensures first events are captured
+
+3. **Between test iterations: DISABLE, wait, re-ENABLE**
+   - Don't leave enabled between test runs
+   - Prevents log pollution from unrelated events
+   - Saves disk space
+
+---
+
 ### ❌ NEVER DO THIS:
 
 1. **NEVER enable all events without filters**
@@ -735,31 +1078,35 @@ Call disable_techlog with cluster_guid and infobase_guid
 
 ### ✅ DO:
 1. **⚠️ DISABLE TECHLOG WHEN INVESTIGATION IS COMPLETE** - Most important rule!
-2. **⚠️ Always remind user to disable after presenting any configuration**
-3. Start with Template 1 (minimal) and expand if needed
-4. Use duration filters for all DB events (DBMSSQL, DBPOSTGRS, SDBL, etc.)
-5. Set history to 24-48 hours maximum in production
-6. Always enable rotation and compress
-7. Place logs on separate SSD drive (D:\, E:\)
-8. Monitor disk space when techlog is enabled
-9. Include EXCP and EXCPCNTX for error tracking
-10. Use JSON format for automated parsing
-11. Document why techlog is enabled and when to disable
-12. Test configuration in dev environment first
+2. **⚠️ After EVERY analysis - verify techlog is disabled or minimal** - MANDATORY checklist!
+3. **⚠️ Always remind user to disable after presenting any configuration**
+4. **Follow the workflow:** enable → action → disable → wait 10s → query → analyze → verify
+5. Start with Template 1 (minimal) and expand if needed
+6. Use duration filters for all DB events (DBMSSQL, DBPOSTGRS, SDBL, etc.)
+7. Set history to 24-48 hours maximum in production
+8. Always enable rotation and compress
+9. Place logs on separate SSD drive (D:\, E:\)
+10. Monitor disk space when techlog is enabled
+11. Include EXCP and EXCPCNTX for error tracking
+12. Use JSON format for automated parsing
+13. Document why techlog is enabled and when to disable
+14. Test configuration in dev environment first
 
 ### ❌ DON'T:
 1. **⚠️ Leave techlog enabled after investigation is complete** - CRITICAL!
-2. **⚠️ Forget to warn user about disabling** - MANDATORY in every response!
-3. Enable all events without filters
-4. Enable SYSTEM events without tech support guidance
-5. Set history > 48 hours in production
-6. Place logs on C:\ drive
-7. Forget rotation and compress settings
-8. Create > 20 &lt;log&gt; elements
-9. Enable DB events without duration filter
-10. Leave comprehensive logging (Template 4) enabled for > 4 hours
-11. Enable techlog permanently without business justification
-12. Ignore disk space warnings
+2. **⚠️ Skip post-analysis checklist verification** - MANDATORY after every analysis!
+3. **⚠️ Forget to warn user about disabling** - MANDATORY in every response!
+4. **⚠️ Query logs immediately after disable** - Wait 10 seconds for parser!
+5. Enable all events without filters
+6. Enable SYSTEM events without tech support guidance
+7. Set history > 48 hours in production
+8. Place logs on C:\ drive
+9. Forget rotation and compress settings
+10. Create > 20 &lt;log&gt; elements
+11. Enable DB events without duration filter
+12. Leave comprehensive logging (Template 4) enabled for > 4 hours
+13. Enable techlog permanently without business justification
+14. Ignore disk space warnings
 
 ---
 
