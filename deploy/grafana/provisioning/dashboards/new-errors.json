@@ -18,10 +18,11 @@
       "gridPos": {"h": 16, "w": 24, "x": 0, "y": 0},
       "targets": [
         {
-          "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
           "rawSql": "WITH errors_last_24h AS (\n  SELECT\n    event_presentation,\n    user_name,\n    metadata_presentation,\n    comment,\n    data_presentation,\n    min(event_time) AS first_seen,\n    count() AS occurrences\n  FROM logs.event_log\n  WHERE event_time >= now() - INTERVAL 24 HOUR\n    AND level IN ('Error', 'Warning')\n  GROUP BY\n    event_presentation,\n    user_name,\n    metadata_presentation,\n    comment,\n    data_presentation\n),\nerrors_prev_24h AS (\n  SELECT\n    event_presentation,\n    user_name,\n    metadata_presentation,\n    comment,\n    data_presentation\n  FROM logs.event_log\n  WHERE event_time >= now() - INTERVAL 48 HOUR\n    AND event_time < now() - INTERVAL 24 HOUR\n    AND level IN ('Error', 'Warning')\n  GROUP BY\n    event_presentation,\n    user_name,\n    metadata_presentation,\n    comment,\n    data_presentation\n)\nSELECT\n  e.first_seen AS \"Дата, время первого появления\",\n  e.event_presentation AS \"Событие\",\n  e.user_name AS \"Пользователь\",\n  e.metadata_presentation AS \"Метаданные\",\n  e.comment AS \"Комментарий\",\n  e.data_presentation AS \"Представление данных\",\n  e.occurrences AS \"Количество повторений\"\nFROM errors_last_24h e\nLEFT JOIN errors_prev_24h p ON\n  e.event_presentation = p.event_presentation\n  AND e.user_name = p.user_name\n  AND e.metadata_presentation = p.metadata_presentation\n  AND e.comment = p.comment\n  AND e.data_presentation = p.data_presentation\nWHERE p.event_presentation IS NULL\nORDER BY e.first_seen DESC\nLIMIT 100",
           "refId": "A",
-          "format": "table"
+          "queryType": "sql",
+          "format": 1
         }
       ],
       "options": {
@@ -41,10 +42,11 @@
       "gridPos": {"h": 4, "w": 6, "x": 0, "y": 16},
       "targets": [
         {
-          "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
           "rawSql": "WITH errors_last_24h AS (\n  SELECT\n    event_presentation,\n    user_name,\n    metadata_presentation,\n    comment,\n    data_presentation\n  FROM logs.event_log\n  WHERE event_time >= now() - INTERVAL 24 HOUR\n    AND level IN ('Error', 'Warning')\n  GROUP BY\n    event_presentation,\n    user_name,\n    metadata_presentation,\n    comment,\n    data_presentation\n),\nerrors_prev_24h AS (\n  SELECT\n    event_presentation,\n    user_name,\n    metadata_presentation,\n    comment,\n    data_presentation\n  FROM logs.event_log\n  WHERE event_time >= now() - INTERVAL 48 HOUR\n    AND event_time < now() - INTERVAL 24 HOUR\n    AND level IN ('Error', 'Warning')\n  GROUP BY\n    event_presentation,\n    user_name,\n    metadata_presentation,\n    comment,\n    data_presentation\n)\nSELECT count() AS count\nFROM errors_last_24h e\nLEFT JOIN errors_prev_24h p ON\n  e.event_presentation = p.event_presentation\n  AND e.user_name = p.user_name\n  AND e.metadata_presentation = p.metadata_presentation\n  AND e.comment = p.comment\n  AND e.data_presentation = p.data_presentation\nWHERE p.event_presentation IS NULL",
           "refId": "A",
-          "format": "table"
+          "queryType": "sql",
+          "format": 1
         }
       ],
       "options": {
@@ -82,10 +84,11 @@
       "gridPos": {"h": 8, "w": 9, "x": 6, "y": 16},
       "targets": [
         {
-          "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
           "rawSql": "WITH errors_last_24h AS (\n  SELECT\n    infobase_name,\n    event_presentation,\n    user_name,\n    metadata_presentation,\n    comment,\n    data_presentation\n  FROM logs.event_log\n  WHERE event_time >= now() - INTERVAL 24 HOUR\n    AND level IN ('Error', 'Warning')\n  GROUP BY\n    infobase_name,\n    event_presentation,\n    user_name,\n    metadata_presentation,\n    comment,\n    data_presentation\n),\nerrors_prev_24h AS (\n  SELECT\n    event_presentation,\n    user_name,\n    metadata_presentation,\n    comment,\n    data_presentation\n  FROM logs.event_log\n  WHERE event_time >= now() - INTERVAL 48 HOUR\n    AND event_time < now() - INTERVAL 24 HOUR\n    AND level IN ('Error', 'Warning')\n  GROUP BY\n    event_presentation,\n    user_name,\n    metadata_presentation,\n    comment,\n    data_presentation\n)\nSELECT\n  e.infobase_name AS infobase,\n  count() AS count\nFROM errors_last_24h e\nLEFT JOIN errors_prev_24h p ON\n  e.event_presentation = p.event_presentation\n  AND e.user_name = p.user_name\n  AND e.metadata_presentation = p.metadata_presentation\n  AND e.comment = p.comment\n  AND e.data_presentation = p.data_presentation\nWHERE p.event_presentation IS NULL\n  AND e.infobase_name != ''\nGROUP BY infobase\nORDER BY count DESC",
           "refId": "A",
-          "format": "table"
+          "queryType": "sql",
+          "format": 1
         }
       ],
       "options": {
@@ -106,10 +109,11 @@
       "gridPos": {"h": 8, "w": 9, "x": 15, "y": 16},
       "targets": [
         {
-          "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
           "rawSql": "WITH errors_last_24h AS (\n  SELECT\n    user_name,\n    event_presentation,\n    metadata_presentation,\n    comment,\n    data_presentation\n  FROM logs.event_log\n  WHERE event_time >= now() - INTERVAL 24 HOUR\n    AND level IN ('Error', 'Warning')\n  GROUP BY\n    user_name,\n    event_presentation,\n    metadata_presentation,\n    comment,\n    data_presentation\n),\nerrors_prev_24h AS (\n  SELECT\n    event_presentation,\n    user_name,\n    metadata_presentation,\n    comment,\n    data_presentation\n  FROM logs.event_log\n  WHERE event_time >= now() - INTERVAL 48 HOUR\n    AND event_time < now() - INTERVAL 24 HOUR\n    AND level IN ('Error', 'Warning')\n  GROUP BY\n    event_presentation,\n    user_name,\n    metadata_presentation,\n    comment,\n    data_presentation\n)\nSELECT\n  e.user_name AS user,\n  count() AS count\nFROM errors_last_24h e\nLEFT JOIN errors_prev_24h p ON\n  e.event_presentation = p.event_presentation\n  AND e.user_name = p.user_name\n  AND e.metadata_presentation = p.metadata_presentation\n  AND e.comment = p.comment\n  AND e.data_presentation = p.data_presentation\nWHERE p.event_presentation IS NULL\n  AND e.user_name != ''\nGROUP BY user\nORDER BY count DESC\nLIMIT 10",
           "refId": "A",
-          "format": "table"
+          "queryType": "sql",
+          "format": 1
         }
       ],
       "options": {

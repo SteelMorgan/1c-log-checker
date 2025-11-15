@@ -1,5 +1,16 @@
 FROM grafana/grafana:latest
 
-# Install ClickHouse datasource plugin
+USER root
+
+# Install ClickHouse plugin before Grafana starts
 RUN grafana-cli plugins install vertamedia-clickhouse-datasource
+
+# Copy init script
+COPY init-grafana.sh /init-grafana.sh
+RUN chmod +x /init-grafana.sh
+
+USER grafana
+
+# Run init script in background and start Grafana
+ENTRYPOINT ["/bin/sh", "-c", "/init-grafana.sh & exec /run.sh"]
 

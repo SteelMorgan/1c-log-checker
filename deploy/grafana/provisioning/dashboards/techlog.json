@@ -15,7 +15,7 @@
       {
         "name": "event_name",
         "type": "query",
-        "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
+        "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
         "query": "SELECT DISTINCT name FROM logs.tech_log WHERE name != '' ORDER BY name",
         "current": {
           "selected": false,
@@ -36,10 +36,11 @@
       "gridPos": {"h": 8, "w": 24, "x": 0, "y": 0},
       "targets": [
         {
-          "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
           "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(ts), 300) * 300) AS time,\n  name,\n  avg(duration) / 1000000 AS avg_duration_ms,\n  quantile(0.95)(duration) / 1000000 AS p95_duration_ms,\n  max(duration) / 1000000 AS max_duration_ms\nFROM logs.tech_log\nWHERE $__timeFilter(ts)\n  AND name IN ('DBMSSQL', 'SDBL', 'PROC')\n  AND duration > 0\n  AND ($event_name = '$__all' OR name IN ($event_name))\nGROUP BY time, name\nORDER BY time",
           "refId": "A",
-          "format": "time_series"
+          "queryType": "sql",
+          "format": 0
         }
       ],
       "fieldConfig": {
@@ -59,10 +60,11 @@
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
       "targets": [
         {
-          "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
           "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(ts), 300) * 300) AS time,\n  name,\n  count() AS count\nFROM logs.tech_log\nWHERE $__timeFilter(ts)\n  AND name IN ('TLOCK', 'TTIMEOUT', 'TDEADLOCK')\n  AND ($event_name = '$__all' OR name IN ($event_name))\nGROUP BY time, name\nORDER BY time",
           "refId": "A",
-          "format": "time_series"
+          "queryType": "sql",
+          "format": 0
         }
       ],
       "fieldConfig": {
@@ -84,10 +86,11 @@
       "gridPos": {"h": 12, "w": 12, "x": 12, "y": 8},
       "targets": [
         {
-          "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
           "rawSql": "SELECT\n  ts AS \"Время\",\n  duration / 1000000 AS \"Длительность (мс)\",\n  arrayElement(property_value, indexOf(property_key, 'Sql')) AS \"SQL запрос\",\n  usr AS \"Пользователь\",\n  session_id AS \"Сеанс\"\nFROM logs.tech_log\nWHERE $__timeFilter(ts)\n  AND name = 'DBMSSQL'\n  AND duration > 0\n  AND ($event_name = '$__all' OR name IN ($event_name))\nORDER BY duration DESC\nLIMIT 100",
           "refId": "A",
-          "format": "table"
+          "queryType": "sql",
+          "format": 1
         }
       ],
       "options": {
@@ -144,10 +147,11 @@
       "gridPos": {"h": 12, "w": 12, "x": 0, "y": 16},
       "targets": [
         {
-          "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
           "rawSql": "SELECT\n  ts AS \"Время\",\n  name AS \"Тип блокировки\",\n  arrayElement(property_value, indexOf(property_key, 'Txt')) AS \"Описание\",\n  arrayElement(property_value, indexOf(property_key, 'Descr')) AS \"Детали\",\n  usr AS \"Пользователь\",\n  session_id AS \"Сеанс\",\n  transaction_id AS \"Транзакция\"\nFROM logs.tech_log\nWHERE $__timeFilter(ts)\n  AND name IN ('TLOCK', 'TTIMEOUT', 'TDEADLOCK')\n  AND ($event_name = '$__all' OR name IN ($event_name))\nORDER BY ts DESC\nLIMIT 100",
           "refId": "A",
-          "format": "table"
+          "queryType": "sql",
+          "format": 1
         }
       ],
       "options": {
@@ -167,10 +171,11 @@
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
       "targets": [
         {
-          "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
           "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(ts), 300) * 300) AS time,\n  name,\n  count() AS count\nFROM logs.tech_log\nWHERE $__timeFilter(ts)\n  AND level IN ('ERROR', 'EXCP')\n  AND ($event_name = '$__all' OR name IN ($event_name))\nGROUP BY time, name\nORDER BY time",
           "refId": "A",
-          "format": "time_series"
+          "queryType": "sql",
+          "format": 0
         }
       ],
       "fieldConfig": {
@@ -192,10 +197,11 @@
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 28},
       "targets": [
         {
-          "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
           "rawSql": "SELECT\n  name AS event,\n  count() AS count\nFROM logs.tech_log\nWHERE $__timeFilter(ts)\n  AND ($event_name = '$__all' OR name IN ($event_name))\nGROUP BY event\nORDER BY count DESC\nLIMIT 15",
           "refId": "A",
-          "format": "table"
+          "queryType": "sql",
+          "format": 1
         }
       ],
       "options": {

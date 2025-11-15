@@ -139,9 +139,71 @@ func (s *Server) Stop() error {
 
 // HTTP handlers (simplified REST API for MCP tools)
 func (s *Server) handleGetEventLog(w http.ResponseWriter, r *http.Request) {
-	// TODO: Parse request parameters and call handler
-	w.WriteHeader(http.StatusNotImplemented)
-	json.NewEncoder(w).Encode(map[string]string{"error": "not implemented yet"})
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Parse JSON request body
+	var req struct {
+		ClusterGUID  string `json:"cluster_guid"`
+		InfobaseGUID string `json:"infobase_guid"`
+		From         string `json:"from"`
+		To           string `json:"to"`
+		Level        string `json:"level,omitempty"`
+		Mode         string `json:"mode,omitempty"`
+		Limit        int    `json:"limit,omitempty"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parse time strings
+	fromTime, err := time.Parse(time.RFC3339, req.From)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Invalid 'from' time format: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	toTime, err := time.Parse(time.RFC3339, req.To)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Invalid 'to' time format: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// Build parameters
+	params := handlers.EventLogParams{
+		ClusterGUID:  req.ClusterGUID,
+		InfobaseGUID: req.InfobaseGUID,
+		From:         fromTime,
+		To:           toTime,
+		Level:        req.Level,
+		Mode:         req.Mode,
+		Limit:        req.Limit,
+	}
+
+	// Call handler
+	result, err := s.eventLogHandler.GetEventLog(r.Context(), params)
+	if err != nil {
+		// Check if it's a validation error
+		if valErr, ok := err.(*handlers.ValidationError); ok {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(valErr)
+			return
+		}
+
+		log.Error().Err(err).Msg("Failed to get event log")
+		http.Error(w, fmt.Sprintf("Internal error: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Return result
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(result))
 }
 
 func (s *Server) handleGetTechLog(w http.ResponseWriter, r *http.Request) {

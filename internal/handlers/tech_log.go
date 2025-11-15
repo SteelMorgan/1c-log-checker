@@ -26,6 +26,32 @@ func NewTechLogHandler(ch *clickhouse.Client, clusterMap *mapping.ClusterMap) *T
 
 // GetTechLog retrieves tech log records
 func (h *TechLogHandler) GetTechLog(ctx context.Context, params TechLogParams) (string, error) {
+	// Validate GUIDs
+	if err := ValidateGUID(params.ClusterGUID, "cluster_guid"); err != nil {
+		return "", err
+	}
+	if err := ValidateGUID(params.InfobaseGUID, "infobase_guid"); err != nil {
+		return "", err
+	}
+
+	// Validate time range
+	if err := ValidateTimeRange(params.From.Format(time.RFC3339), params.To.Format(time.RFC3339)); err != nil {
+		return "", err
+	}
+
+	// Validate mode
+	if err := ValidateMode(params.Mode); err != nil {
+		return "", err
+	}
+
+	// Set defaults
+	if params.Mode == "" {
+		params.Mode = "minimal"
+	}
+	if params.Limit <= 0 {
+		params.Limit = 1000
+	}
+
 	// Build query
 	var query string
 	if params.Mode == "minimal" {

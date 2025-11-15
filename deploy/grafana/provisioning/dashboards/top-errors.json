@@ -15,7 +15,7 @@
       {
         "name": "infobase",
         "type": "query",
-        "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
+        "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
         "query": "SELECT DISTINCT infobase_name FROM logs.event_log WHERE infobase_name != '' AND level IN ('Error', 'Warning') ORDER BY infobase_name",
         "current": {
           "selected": false,
@@ -29,7 +29,7 @@
       {
         "name": "user",
         "type": "query",
-        "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
+        "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
         "query": "SELECT DISTINCT user_name FROM logs.event_log WHERE user_name != '' AND level IN ('Error', 'Warning') ORDER BY user_name",
         "current": {
           "selected": false,
@@ -50,10 +50,11 @@
       "gridPos": {"h": 16, "w": 24, "x": 0, "y": 0},
       "targets": [
         {
-          "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
-          "rawSql": "SELECT\n  event_presentation AS \"Событие\",\n  user_name AS \"Пользователь\",\n  computer AS \"Компьютер\",\n  metadata_presentation AS \"Метаданные\",\n  comment AS \"Комментарий\",\n  count() AS \"Количество повторений\",\n  max(event_time) AS \"Последнее появление\"\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND level IN ('Error', 'Warning')\n  AND ($infobase = '$__all' OR infobase_name IN ($infobase))\n  AND ($user = '$__all' OR user_name IN ($user))\nGROUP BY\n  event_presentation,\n  user_name,\n  computer,\n  metadata_presentation,\n  comment\nORDER BY \"Количество повторений\" DESC\nLIMIT 100",
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "rawSql": "SELECT\n  event_presentation AS \"Событие\",\n  user_name AS \"Пользователь\",\n  computer AS \"Компьютер\",\n  metadata_presentation AS \"Метаданные\",\n  comment AS \"Комментарий\",\n  count() AS \"Количество повторений\",\n  max(event_time) AS \"Последнее появление\"\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND level IN ('Error', 'Warning')\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\n  AND ('$__all' IN ($user) OR user_name IN ($user))\nGROUP BY\n  event_presentation,\n  user_name,\n  computer,\n  metadata_presentation,\n  comment\nORDER BY \"Количество повторений\" DESC\nLIMIT 100",
           "refId": "A",
-          "format": "table"
+          "queryType": "sql",
+          "format": 1
         }
       ],
       "options": {
@@ -110,10 +111,11 @@
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
       "targets": [
         {
-          "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
-          "rawSql": "SELECT\n  event_presentation AS event,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND level IN ('Error', 'Warning')\n  AND ($infobase = '$__all' OR infobase_name IN ($infobase))\n  AND ($user = '$__all' OR user_name IN ($user))\nGROUP BY event\nORDER BY count DESC\nLIMIT 10",
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "rawSql": "SELECT\n  event_presentation AS event,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND level IN ('Error', 'Warning')\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\n  AND ('$__all' IN ($user) OR user_name IN ($user))\nGROUP BY event\nORDER BY count DESC\nLIMIT 10",
           "refId": "A",
-          "format": "table"
+          "queryType": "sql",
+          "format": 1
         }
       ],
       "options": {
@@ -131,10 +133,11 @@
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
       "targets": [
         {
-          "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
-          "rawSql": "SELECT\n  user_name AS user,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND level IN ('Error', 'Warning')\n  AND ($infobase = '$__all' OR infobase_name IN ($infobase))\n  AND ($user = '$__all' OR user_name IN ($user))\n  AND user_name != ''\nGROUP BY user\nORDER BY count DESC\nLIMIT 10",
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "rawSql": "SELECT\n  user_name AS user,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND level IN ('Error', 'Warning')\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\n  AND ('$__all' IN ($user) OR user_name IN ($user))\n  AND user_name != ''\nGROUP BY user\nORDER BY count DESC\nLIMIT 10",
           "refId": "A",
-          "format": "table"
+          "queryType": "sql",
+          "format": 1
         }
       ],
       "options": {

@@ -15,7 +15,7 @@
       {
         "name": "infobase",
         "type": "query",
-        "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
+        "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
         "query": "SELECT DISTINCT infobase_name FROM logs.event_log WHERE infobase_name != '' ORDER BY infobase_name",
         "current": {
           "selected": false,
@@ -29,7 +29,7 @@
       {
         "name": "user",
         "type": "query",
-        "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
+        "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
         "query": "SELECT DISTINCT user_name FROM logs.event_log WHERE user_name != '' ORDER BY user_name",
         "current": {
           "selected": false,
@@ -50,10 +50,11 @@
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
       "targets": [
         {
-          "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
-          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(event_time), 300) * 300) AS time,\n  level,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ('$infobase' = '$__all' OR infobase_name = '' OR infobase_name IN ($infobase))\n  AND ('$user' = '$__all' OR user_name = '' OR user_name IN ($user))\nGROUP BY time, level\nORDER BY time",
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
           "refId": "A",
-          "format": "time_series"
+          "queryType": "sql",
+          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(event_time), 300) * 300) AS time,\n  level,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\n  AND ('$__all' IN ($user) OR user_name IN ($user))\nGROUP BY time, level\nORDER BY time",
+          "format": 0
         }
       ],
       "fieldConfig": {
@@ -77,10 +78,11 @@
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
       "targets": [
         {
-          "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
-          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(event_time), 300) * 300) AS time,\n  event_presentation AS event,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ('$infobase' = '$__all' OR infobase_name = '' OR infobase_name IN ($infobase))\n  AND ('$user' = '$__all' OR user_name = '' OR user_name IN ($user))\nGROUP BY time, event\nORDER BY time, count DESC\nLIMIT 10",
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
           "refId": "A",
-          "format": "time_series"
+          "queryType": "sql",
+          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(event_time), 300) * 300) AS time,\n  event_presentation AS event,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\n  AND ('$__all' IN ($user) OR user_name IN ($user))\nGROUP BY time, event\nORDER BY time, count DESC\nLIMIT 10",
+          "format": 0
         }
       ],
       "fieldConfig": {
@@ -99,10 +101,11 @@
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
       "targets": [
         {
-          "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
-          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(event_time), 300) * 300) AS time,\n  user_name AS user,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ('$infobase' = '$__all' OR infobase_name = '' OR infobase_name IN ($infobase))\n  AND ('$user' = '$__all' OR user_name = '' OR user_name IN ($user))\n  AND user_name != ''\nGROUP BY time, user\nORDER BY time, count DESC\nLIMIT 10",
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
           "refId": "A",
-          "format": "time_series"
+          "queryType": "sql",
+          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(event_time), 300) * 300) AS time,\n  user_name AS user,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\n  AND ('$__all' IN ($user) OR user_name IN ($user))\n  AND user_name != ''\nGROUP BY time, user\nORDER BY time, count DESC\nLIMIT 10",
+          "format": 0
         }
       ],
       "fieldConfig": {
@@ -121,10 +124,11 @@
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
       "targets": [
         {
-          "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
-          "rawSql": "SELECT\n  event_presentation AS event,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ('$infobase' = '$__all' OR infobase_name = '' OR infobase_name IN ($infobase))\n  AND ('$user' = '$__all' OR user_name = '' OR user_name IN ($user))\nGROUP BY event\nORDER BY count DESC\nLIMIT 15",
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "rawSql": "SELECT\n  event_presentation AS event,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\n  AND ('$__all' IN ($user) OR user_name IN ($user))\nGROUP BY event\nORDER BY count DESC\nLIMIT 15",
           "refId": "A",
-          "format": "table"
+          "queryType": "sql",
+          "format": 1
         }
       ],
       "options": {
@@ -145,10 +149,11 @@
       "gridPos": {"h": 12, "w": 24, "x": 0, "y": 16},
       "targets": [
         {
-          "datasource": {"type": "vertamedia-clickhouse-datasource", "uid": "clickhouse"},
-          "rawSql": "SELECT\n  event_time AS \"Дата, время\",\n  data_separation AS \"Разделение данных сеанса\",\n  user_name AS \"Пользователь\",\n  computer AS \"Компьютер\",\n  application_presentation AS \"Приложение\",\n  event_presentation AS \"Событие\",\n  transaction_status AS \"Статус транзакции\",\n  metadata_presentation AS \"Метаданные\"\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ('$infobase' = '$__all' OR infobase_name = '' OR infobase_name IN ($infobase))\n  AND ('$user' = '$__all' OR user_name = '' OR user_name IN ($user))\nORDER BY event_time DESC\nLIMIT 1000",
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "rawSql": "SELECT\n  event_time AS \"Дата, время\",\n  data_separation AS \"Разделение данных сеанса\",\n  user_name AS \"Пользователь\",\n  computer AS \"Компьютер\",\n  application_presentation AS \"Приложение\",\n  event_presentation AS \"Событие\",\n  transaction_status AS \"Статус транзакции\",\n  metadata_presentation AS \"Метаданные\"\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\n  AND ('$__all' IN ($user) OR user_name IN ($user))\nORDER BY event_time DESC\nLIMIT 1000",
           "refId": "A",
-          "format": "table"
+          "queryType": "sql",
+          "format": 1
         }
       ],
       "options": {

@@ -25,6 +25,19 @@ func NewNewErrorsHandler(ch *clickhouse.Client, clusterMap *mapping.ClusterMap) 
 
 // GetNewErrors retrieves errors unique in last N hours
 func (h *NewErrorsHandler) GetNewErrors(ctx context.Context, params NewErrorsParams) (string, error) {
+	// Validate GUIDs
+	if err := ValidateGUID(params.ClusterGUID, "cluster_guid"); err != nil {
+		return "", err
+	}
+	if err := ValidateGUID(params.InfobaseGUID, "infobase_guid"); err != nil {
+		return "", err
+	}
+
+	// Set default limit
+	if params.Limit <= 0 {
+		params.Limit = 100
+	}
+
 	// Query for new errors using materialized view
 	query := `
 		SELECT 

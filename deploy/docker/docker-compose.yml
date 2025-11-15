@@ -79,9 +79,7 @@ services:
     restart: unless-stopped
 
   grafana:
-    build:
-      context: .
-      dockerfile: Dockerfile.grafana
+    image: grafana/grafana:latest
     container_name: 1c-log-grafana
     depends_on:
       clickhouse:
@@ -90,22 +88,24 @@ services:
       - "3000:3000"
     volumes:
       - grafana_data:/var/lib/grafana
-      - ../grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./init-grafana.sh:/init-grafana.sh:ro
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
-      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: vertamedia-clickhouse-datasource
+      GF_INSTALL_PLUGINS: grafana-clickhouse-datasource
     networks:
       - internal
       - monitoring
     restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c", "/init-grafana.sh & exec /run.sh"]
     healthcheck:
       test: ["CMD-SHELL", "wget --spider -q http://localhost:3000/api/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 40s
+      start_period: 60s
 
 volumes:
   clickhouse_data:
