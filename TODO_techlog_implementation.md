@@ -98,57 +98,79 @@ D:\TechLogs\
 
 ---
 
-### 3. КРИТИЧЕСКАЯ ПРОБЛЕМА: ClusterGUID/InfobaseGUID
+### 3. РЕШЕНИЕ ПРОБЛЕМЫ: ClusterGUID/InfobaseGUID
 
 **Вывод исследования:**
 Стандартная структура каталогов технологического журнала **НЕ СОДЕРЖИТ** информации о кластере/информационной базе!
 
-**Возможные решения:**
+**ВЫБРАНО РЕШЕНИЕ: Вариант A** - GUID'ы в структуре каталогов
 
-#### Вариант A: Через параметр location в logcfg.xml
-Агент создает отдельные каталоги для каждой базы:
-```xml
-<log location="D:\TechLogs\cluster1\base1" format="json">
-    <event><eq property="name" value="EXCP"/></event>
-</log>
-<log location="D:\TechLogs\cluster1\base2" format="json">
-    <event><eq property="name" value="EXCP"/></event>
-</log>
+#### Архитектура решения:
+
+**1. Структура каталогов:**
+```
+D:\TechLogs\
+└── b0881663-f2a7-4195-b7a2-f7f8e6c3a8f3\      # cluster_guid (уровень -2)
+    └── d723aefd-7992-420d-b5f9-a273fd4146be\  # infobase_guid (уровень -1)
+        ├── rphost_1234\                       # appName_pid (текущий уровень)
+        │   ├── 25011408.log
+        │   └── 25011409.log
+        └── 1cv8c_5678\
+            └── 25011408.log
 ```
 
-Парсер определяет GUID через mapping: `path → {cluster_guid, infobase_guid}`
+**2. MCP Tool `configure_techlog`:**
 
-**Проблемы:**
-- Нужен механизм настройки mapping
-- Не работает если база перемещена
+Агент передает конфиг с путями включающими GUID'ы:
 
-#### Вариант B: Через MCP параметры (ВЫБРАН)
-Агент передает GUID'ы явно при настройке через `configure_techlog` MCP tool:
 ```json
 {
   "cluster_guid": "b0881663-f2a7-4195-b7a2-f7f8e6c3a8f3",
   "infobase_guid": "d723aefd-7992-420d-b5f9-a273fd4146be",
-  "location": "D:\\TechLogs",
-  "format": "json",
-  "events": ["EXCP", "TLOCK"]
+  "config_xml": "<log location=\"D:\\TechLogs\\b0881663-...\\d723aefd-...\" ...>",
+  "base_location": "D:\\TechLogs"  // опционально
 }
 ```
 
-Парсер хранит mapping: `{location → {cluster_guid, infobase_guid}}`
+**Валидация в tool:**
+- Извлечь `location` из XML
+- Проверить соответствие шаблону: `<base>/<cluster_guid>/<infobase_guid>`
+- Regex: `.+[/\\][0-9a-f-]{36}[/\\][0-9a-f-]{36}$`
+- Если НЕ соответствует → вернуть ошибку агенту:
+  ```json
+  {
+    "error": "Invalid location path",
+    "message": "Location must include cluster_guid and infobase_guid",
+    "expected_pattern": "D:\\TechLogs\\<cluster_guid>\\<infobase_guid>",
+    "received": "D:\\TechLogs"
+  }
+  ```
+
+**3. Парсер:**
+
+Извлекает GUID'ы из пути файла:
+
+```go
+// Пример: D:\TechLogs\cluster-guid\infobase-guid\rphost_1234\25011408.log
+func extractGUIDsFromPath(filePath string) (clusterGUID, infobaseGUID string, err error) {
+    // Ищем 2 GUID'а в пути (родительские каталоги -2 и -1 уровня)
+    // infobase_guid - ближе к файлу (уровень -1)
+    // cluster_guid - дальше от файла (уровень -2)
+}
+```
+
+При обработке каждого файла:
+- Извлечь cluster_guid и infobase_guid из пути
+- Добавить в каждую запись: `record.ClusterGUID = clusterGUID; record.InfobaseGUID = infobaseGUID`
+- Записать в ClickHouse
 
 **Преимущества:**
-- ✅ Явно и надежно
-- ✅ Агент контролирует процесс
-- ✅ Не зависит от структуры каталогов
-- ✅ Просто реализовать
-
-#### Вариант C: Из свойств событий
-Некоторые события содержат свойства `Infobase`, `IB`, но:
-- ❌ Не гарантировано для всех типов событий
-- ❌ Нет cluster_guid
-- ❌ Ненадежно
-
-**ВЫБРАНО РЕШЕНИЕ: Вариант B** - через MCP параметры
+- ✅ Нет необходимости в отдельном mapping файле
+- ✅ GUID'ы естественно закодированы в структуре каталогов
+- ✅ Парсер автоматически определяет источник из пути
+- ✅ Самодокументируемая структура
+- ✅ Проще и надежнее
+- ✅ Агент контролирует правильность путей через валидацию
 
 ---
 
@@ -202,10 +224,11 @@ D:\TechLogs\
 
 ## 🎯 АРХИТЕКТУРНЫЕ РЕШЕНИЯ
 
-### 1. ClusterGUID/InfobaseGUID: Вариант B
-- MCP tool `configure_techlog` принимает параметры: `{cluster_guid, infobase_guid, location, ...}`
-- Парсер хранит mapping в конфиге или в памяти
-- При обработке файлов из `location` → подставляет соответствующие GUID'ы
+### 1. ClusterGUID/InfobaseGUID: Вариант A - GUID'ы в структуре каталогов
+- Агент формирует путь: `<base>/<cluster_guid>/<infobase_guid>`
+- MCP tool `configure_techlog` валидирует структуру пути
+- Парсер извлекает GUID'ы из пути файла (родительские каталоги -2 и -1 уровня)
+- При обработке файла → извлечь GUID'ы из пути → добавить в каждую запись
 
 ### 2. Формат данных
 - Читать из `logcfg.xml` (приоритет)
@@ -261,30 +284,148 @@ TTL timestamp + INTERVAL 90 DAY;
 
 ### **PHASE 2: Core Implementation (Базовая реализация)**
 
-#### 2.1. ClusterGUID/InfobaseGUID через MCP параметры
+#### 2.1. ClusterGUID/InfobaseGUID через структуру каталогов
 
 **Файлы:**
-- `internal/config/config.go` - добавить TechLogMapping
-- `cmd/mcp/handlers.go` - обновить configure_techlog handler
+- `cmd/mcp/handlers.go` - обновить configure_techlog handler (валидация)
+- `internal/techlog/path_parser.go` (новый) - извлечение GUID из пути
+- `internal/techlog/tailer.go` - интеграция извлечения GUID
 
 **Задачи:**
-1. Добавить структуру для mapping:
+
+**A) Валидация в MCP tool `configure_techlog`:**
+
+1. Парсить XML конфига и извлечь атрибут `location`:
    ```go
-   type TechLogMapping struct {
-       Location      string
-       ClusterGUID   string
-       InfobaseGUID  string
-       Format        string  // "text" или "json"
+   func extractLocationFromConfig(configXML string) (string, error) {
+       // Парсить XML, найти элемент <log>, извлечь атрибут location
    }
    ```
 
-2. MCP tool `configure_techlog` сохраняет mapping:
-   - В файл `configs/techlog_mapping.json`
-   - Или в ClickHouse таблицу `techlog_config`
+2. Валидировать структуру пути:
+   ```go
+   func validateTechLogPath(location string, clusterGUID, infobaseGUID string) error {
+       // Проверить что путь содержит cluster_guid и infobase_guid
+       // Regex: .+[/\\][0-9a-f-]{36}[/\\][0-9a-f-]{36}$
 
-3. Парсер читает mapping при старте
+       // Извлечь GUID'ы из пути
+       extractedClusterGUID, extractedInfobaseGUID, err := extractGUIDsFromPath(location)
+       if err != nil {
+           return fmt.Errorf("path must include cluster_guid and infobase_guid: %w", err)
+       }
 
-**Критерий готовности:** Парсер может определить cluster_guid/infobase_guid для файлов из заданного location
+       // Проверить соответствие переданным GUID'ам
+       if extractedClusterGUID != clusterGUID {
+           return fmt.Errorf("cluster_guid in path (%s) != provided (%s)", extractedClusterGUID, clusterGUID)
+       }
+       if extractedInfobaseGUID != infobaseGUID {
+           return fmt.Errorf("infobase_guid in path (%s) != provided (%s)", extractedInfobaseGUID, infobaseGUID)
+       }
+
+       return nil
+   }
+   ```
+
+3. Если валидация не прошла → вернуть ошибку агенту:
+   ```json
+   {
+       "error": "Invalid techlog location path",
+       "message": "Location must follow pattern: <base>/<cluster_guid>/<infobase_guid>",
+       "expected_cluster_guid": "b0881663-f2a7-4195-b7a2-f7f8e6c3a8f3",
+       "expected_infobase_guid": "d723aefd-7992-420d-b5f9-a273fd4146be",
+       "expected_pattern": "D:\\TechLogs\\b0881663-f2a7-4195-b7a2-f7f8e6c3a8f3\\d723aefd-7992-420d-b5f9-a273fd4146be",
+       "received_location": "D:\\TechLogs"
+   }
+   ```
+
+**B) Извлечение GUID из пути в парсере:**
+
+1. Создать функцию `extractGUIDsFromPath()`:
+   ```go
+   // internal/techlog/path_parser.go
+
+   var guidRegex = regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
+
+   func extractGUIDsFromPath(filePath string) (clusterGUID, infobaseGUID string, err error) {
+       // Нормализовать путь
+       path := filepath.ToSlash(filePath)
+       parts := strings.Split(path, "/")
+
+       // Ищем GUID'ы в обратном порядке (от файла к корню)
+       // Пропускаем имя файла и каталог процесса (rphost_XXX)
+       var foundGUIDs []string
+       for i := len(parts) - 2; i >= 0 && len(foundGUIDs) < 2; i-- {
+           if guidRegex.MatchString(parts[i]) {
+               foundGUIDs = append(foundGUIDs, parts[i])
+           }
+       }
+
+       if len(foundGUIDs) < 2 {
+           return "", "", fmt.Errorf("expected 2 GUIDs in path, found %d: %s", len(foundGUIDs), filePath)
+       }
+
+       // foundGUIDs[0] = infobase_guid (ближе к файлу, уровень -1)
+       // foundGUIDs[1] = cluster_guid (дальше от файла, уровень -2)
+       infobaseGUID = foundGUIDs[0]
+       clusterGUID = foundGUIDs[1]
+
+       return clusterGUID, infobaseGUID, nil
+   }
+   ```
+
+2. Интеграция в Tailer:
+   ```go
+   func (t *Tailer) processFile(ctx context.Context, filePath string, handler func(*domain.TechLogRecord) error) error {
+       // Извлечь GUID'ы из пути
+       clusterGUID, infobaseGUID, err := extractGUIDsFromPath(filePath)
+       if err != nil {
+           log.Error().Err(err).Str("file", filePath).Msg("Failed to extract GUIDs from path")
+           return err
+       }
+
+       log.Info().
+           Str("file", filePath).
+           Str("cluster_guid", clusterGUID).
+           Str("infobase_guid", infobaseGUID).
+           Msg("Processing techlog file")
+
+       // ... парсинг строк ...
+
+       for line := range lines {
+           record, err := parseLine(line)
+           if err != nil {
+               continue
+           }
+
+           // Добавить GUID'ы в запись
+           record.ClusterGUID = clusterGUID
+           record.InfobaseGUID = infobaseGUID
+
+           // Отправить в handler
+           handler(record)
+       }
+
+       return nil
+   }
+   ```
+
+**C) Обновить MCP tool описание:**
+
+Добавить в description tool требование к структуре пути:
+```
+IMPORTANT: The 'location' attribute in config XML MUST follow the pattern:
+<base_path>/<cluster_guid>/<infobase_guid>
+
+Example:
+<log location="D:\TechLogs\b0881663-f2a7-4195-b7a2-f7f8e6c3a8f3\d723aefd-7992-420d-b5f9-a273fd4146be">
+
+The tool will validate this structure and return an error if it doesn't match.
+```
+
+**Критерий готовности:**
+- [ ] MCP tool валидирует структуру пути и возвращает ошибку если неправильно
+- [ ] Парсер извлекает cluster_guid/infobase_guid из пути файла
+- [ ] GUID'ы корректно добавляются в каждую запись перед отправкой в ClickHouse
 
 #### 2.2. Определение формата (logcfg.xml + fallback)
 
@@ -327,7 +468,19 @@ TTL timestamp + INTERVAL 90 DAY;
 
 **Критерий готовности:** При restart парсер продолжает с сохраненного offset
 
-#### 2.4. Извлечение timestamp из имени файла
+#### 2.4. Извлечение timestamp из имени файла (только для text hierarchical)
+
+**ВАЖНО:** Это нужно ТОЛЬКО для поддержки **text формата с hierarchical placement**.
+
+Если агент использует **JSON формат** (рекомендуем), то timestamp уже есть в каждой строке и этот шаг **НЕ НУЖЕН**.
+
+**Проблема:**
+В hierarchical text формате строки содержат только `mm:ss.microsec` (БЕЗ даты):
+```
+45:31.831006-1,SCALL,2,...
+```
+
+Дата извлекается из имени файла `25011408.log` = `yymmddhh` = `2025-01-14 08:00:00`
 
 **Файлы:**
 - `internal/techlog/text_parser.go` (обновить parseHierarchicalTimestamp)
@@ -335,11 +488,15 @@ TTL timestamp + INTERVAL 90 DAY;
 
 **Задачи:**
 1. Создать функцию `ExtractTimestampFromFilename(filename string) (time.Time, error)`
-2. Парсинг форматов:
-   - `yymmddhh.log` → `20YY-MM-DD HH:00:00`
-   - `rphost_pid_yymmddhh.log` → аналогично
+   ```go
+   func ExtractTimestampFromFilename(filename string) (time.Time, error) {
+       // Извлечь yymmddhh из имени
+       // 25011408.log → 2025-01-14 08:00:00
+       // rphost_1234_25011408.log → 2025-01-14 08:00:00
+   }
+   ```
 
-3. Обновить `parseHierarchicalTimestamp()`:
+2. Обновить `parseHierarchicalTimestamp()`:
    ```go
    func parseHierarchicalTimestamp(line string, record *domain.TechLogRecord, fileTimestamp time.Time) (string, error) {
        // Использовать fileTimestamp вместо time.Now()
@@ -351,7 +508,13 @@ TTL timestamp + INTERVAL 90 DAY;
    }
    ```
 
-**Критерий готовности:** Hierarchical format имеет корректную дату из имени файла
+3. Передать fileTimestamp в парсер при обработке файла
+
+**Критерий готовности:**
+- [ ] Hierarchical text format имеет корректную дату из имени файла
+- [ ] JSON format работает без изменений (timestamp уже в данных)
+
+**Приоритет:** НИЗКИЙ (если агент использует JSON, можно пропустить для MVP)
 
 #### 2.5. Обработка исторических файлов
 
@@ -429,28 +592,42 @@ TTL timestamp + INTERVAL 90 DAY;
 #### 3.1. Создание config файла
 
 **Действия:**
-1. Запустить MCP tool `configure_techlog` с параметрами:
+1. Агент формирует конфиг XML с правильной структурой пути:
+   ```xml
+   <config xmlns="http://v8.1c.ru/v8/tech-log">
+       <dump create="false"/>
+       <log location="D:\TechLogs\b0881663-f2a7-4195-b7a2-f7f8e6c3a8f3\d723aefd-7992-420d-b5f9-a273fd4146be"
+            format="json"
+            history="1"
+            placement="folders">
+           <event><eq property="name" value="EXCP"/></event>
+           <event><eq property="name" value="QERR"/></event>
+           <property name="all"/>
+       </log>
+   </config>
+   ```
+
+2. Запустить MCP tool `configure_techlog` с параметрами:
    ```json
    {
-     "cluster_guid": "test-cluster-guid",
-     "infobase_guid": "test-infobase-guid",
-     "location": "D:\\TechLogs\\test",
-     "format": "json",
-     "events": ["EXCP", "QERR"],
-     "history": 1,
-     "compress": false
+     "cluster_guid": "b0881663-f2a7-4195-b7a2-f7f8e6c3a8f3",
+     "infobase_guid": "d723aefd-7992-420d-b5f9-a273fd4146be",
+     "config_xml": "<config>...</config>",
+     "base_location": "D:\\TechLogs"
    }
    ```
 
-2. Tool создает:
-   - `logcfg.xml` с настройками
-   - Запись в `techlog_mapping.json`
+3. Tool выполняет:
+   - Валидацию структуры пути (должен содержать cluster_guid/infobase_guid)
+   - Создание каталогов: `D:\TechLogs\{cluster_guid}\{infobase_guid}`
+   - Запись `logcfg.xml` в стандартное расположение
 
 **Проверка пользователем:**
 - [ ] `logcfg.xml` создан с правильными параметрами
 - [ ] `format="json"` установлен
-- [ ] `location` указан правильно
-- [ ] Mapping сохранен
+- [ ] `location` содержит cluster_guid и infobase_guid в пути
+- [ ] Каталоги созданы: `D:\TechLogs\{cluster_guid}\{infobase_guid}`
+- [ ] Валидация не вернула ошибку
 
 #### 3.2. Генерация логов через unit-тесты
 
@@ -460,7 +637,7 @@ TTL timestamp + INTERVAL 90 DAY;
 3. Подождать формирования логов
 
 **Проверка пользователем:**
-- [ ] В `D:\TechLogs\test\rphost_XXXX\` созданы .log файлы
+- [ ] В `D:\TechLogs\{cluster_guid}\{infobase_guid}\rphost_XXXX\` созданы .log файлы
 - [ ] Файлы в JSON формате
 - [ ] События EXCP присутствуют в логах
 - [ ] Timestamp корректные
@@ -686,14 +863,16 @@ func (t *Tailer) processFilesParallel(ctx context.Context, files []*FileInfo, ha
 ## 📝 ЗАМЕТКИ И ВОПРОСЫ
 
 ### Решенные вопросы:
-1. ✅ **ClusterGUID/InfobaseGUID:** Через MCP параметры (Вариант B)
+1. ✅ **ClusterGUID/InfobaseGUID:** Через структуру каталогов (Вариант A)
+   - Путь: `<base>/<cluster_guid>/<infobase_guid>`
+   - Валидация в MCP tool
+   - Извлечение из пути в парсере
 2. ✅ **Формат:** Читать из logcfg.xml + fallback по первой строке
 3. ✅ **Рекомендация агенту:** JSON формат (экономия токенов)
 4. ✅ **Архивы:** Пока не обрабатывать (MVP без .zip)
+5. ✅ **Mapping:** Не нужен отдельный файл - GUID'ы в структуре каталогов
 
 ### Открытые вопросы:
-1. ❓ Хранить mapping в файле или в ClickHouse?
-   - **Предложение:** Файл `configs/techlog_mapping.json` (проще для MVP)
 
 2. ❓ Как часто сохранять offset?
    - **Предложение:** После каждого батча (500 записей) или каждые 5 секунд
