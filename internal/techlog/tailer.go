@@ -111,21 +111,39 @@ func (t *Tailer) processNewRecords(ctx context.Context, handler func(*domain.Tec
 		t.lastInode = currentInode
 		t.lastSize = 0 // Start from beginning
 	}
-	
+
+	// Extract cluster_guid and infobase_guid from file path
+	clusterGUID, infobaseGUID, err := extractGUIDsFromPath(latestFile)
+	if err != nil {
+		log.Warn().
+			Err(err).
+			Str("file", latestFile).
+			Msg("Failed to extract GUIDs from path, records will have empty GUIDs")
+		// Continue processing but GUIDs will be empty
+		clusterGUID = ""
+		infobaseGUID = ""
+	} else {
+		log.Debug().
+			Str("file", latestFile).
+			Str("cluster_guid", clusterGUID).
+			Str("infobase_guid", infobaseGUID).
+			Msg("Extracted GUIDs from file path")
+	}
+
 	// Read new lines
 	for t.scanner.Scan() {
 		line := t.scanner.Text()
-		
+
 		// Parse the line
 		var record *domain.TechLogRecord
 		var parseErr error
-		
+
 		if t.isJSON {
 			record, parseErr = ParseJSONLine(line)
 		} else {
 			record, parseErr = ParseTextLine(line)
 		}
-		
+
 		if parseErr != nil {
 			log.Warn().
 				Err(parseErr).
@@ -133,7 +151,11 @@ func (t *Tailer) processNewRecords(ctx context.Context, handler func(*domain.Tec
 				Msg("Failed to parse tech log line, skipping")
 			continue
 		}
-		
+
+		// Add cluster_guid and infobase_guid to record
+		record.ClusterGUID = clusterGUID
+		record.InfobaseGUID = infobaseGUID
+
 		// Call handler
 		if err := handler(record); err != nil {
 			log.Error().
