@@ -103,10 +103,25 @@ Use when investigating sporadic issues that may occur naturally:
    └─> This writes disabled config to logcfg.xml
    └─> Critical: DO NOT skip this step!
 
-5. WAIT ~10 seconds for parser to process logs
-   └─> Parser needs time to read and load data to ClickHouse
-   └─> Typical: 5-15 seconds depending on log volume
-   └─> Inform user: "Waiting for log parser to process data..."
+5. WAIT for parser to process logs (smart polling)
+   └─> Get target timestamp (when event/test occurred)
+   └─> Poll log readiness in loop (max 10 iterations × 5 sec = 50 sec)
+   └─> Algorithm:
+       ```
+       target_time = time of event/test
+
+       FOR i = 1 to 10:
+         actual_time = call get_log_status()  // MCP tool
+
+         IF actual_time >= target_time:
+           BREAK  // Logs are ready!
+         ELSE:
+           Say: "Waiting for parser... (attempt {i}/10)"
+           WAIT 5 seconds
+
+       IF actual_time < target_time:
+         ERROR: "Parser didn't process logs in 50 seconds - investigate!"
+       ```
 
 6. QUERY logs via MCP tools
    └─> Call get_tech_log with time range
@@ -155,10 +170,11 @@ Use when investigating specific reproducible errors:
    └─> This writes disabled config to logcfg.xml
    └─> Critical: DO NOT leave enabled between test runs!
 
-6. WAIT ~10 seconds for parser to process logs
-   └─> Parser processes techlog files
-   └─> Loads data into ClickHouse database
-   └─> Say: "Waiting 10 seconds for parser..."
+6. WAIT for parser to process logs (smart polling)
+   └─> Get target timestamp (when unit test completed)
+   └─> Poll log readiness in loop (max 10 iterations × 5 sec = 50 sec)
+   └─> Algorithm (same as above)
+   └─> If timeout: ERROR - parser issue
 
 7. QUERY logs via MCP tools
    └─> Call get_tech_log with time range covering the test
@@ -280,9 +296,20 @@ AGENT WORKFLOW:
    Call disable_techlog
    Say: "Disabling techlog..."
 
-8. Wait for parser:
-   "Waiting 10 seconds for log parser to process data..."
-   [Wait 10 seconds]
+8. Smart polling for parser readiness:
+   test_end_time = "2025-11-15T14:23:45Z"  // When test completed
+
+   FOR i = 1 to 10:
+     status = get_log_status()
+     IF status.latest_timestamp >= test_end_time:
+       Say: "✅ Logs ready (took {i*5} seconds)"
+       BREAK
+     ELSE:
+       Say: "⏳ Waiting for parser... (attempt {i}/10)"
+       WAIT 5 seconds
+
+   IF not ready:
+     ERROR: "Parser timeout after 50 seconds!"
 
 9. Query logs:
    Call get_tech_log with:
@@ -338,9 +365,21 @@ AGENT WORKFLOW:
    Call disable_techlog
    Say: "Disabling techlog..."
 
-7. Wait for parser:
-   "Waiting 10 seconds for parser to process logs..."
-   [Actual wait: 10 seconds]
+7. Smart polling for parser readiness:
+   report_end_time = "2025-11-15T14:28:30Z"  // When report completed
+
+   FOR i = 1 to 10:
+     status = get_log_status()
+     IF status.latest_timestamp >= report_end_time:
+       Say: "✅ Logs ready (took {i*5} seconds)"
+       BREAK
+     ELSE:
+       Say: "⏳ Waiting for parser... (attempt {i}/10)"
+       Say: "   Need: {report_end_time}, Have: {status.latest_timestamp}"
+       WAIT 5 seconds
+
+   IF not ready:
+     ERROR: "Parser timeout - check parser logs!"
 
 8. Query logs:
    Call get_tech_log with:
@@ -396,23 +435,92 @@ AGENT WORKFLOW:
 7. Inform user explicitly
 ```
 
+### 🔄 Smart Polling Algorithm (Replaces Fixed 10-Second Wait)
+
+**Problem with fixed delay:**
+- 10 seconds may be too short (logs not ready)
+- 10 seconds may be too long (logs ready in 3 seconds)
+- No feedback if parser has issues
+
+**Solution - Poll log readiness:**
+
+```python
+def wait_for_logs_ready(target_timestamp):
+    """
+    Wait for parser to process logs up to target timestamp.
+
+    Args:
+        target_timestamp: Time when event/test occurred (ISO 8601)
+
+    Returns:
+        True if logs ready, False if timeout
+    """
+    max_iterations = 10
+    wait_interval = 5  # seconds
+
+    for iteration in range(1, max_iterations + 1):
+        # Call MCP tool to check log readiness
+        actual_timestamp = get_log_status()
+
+        if actual_timestamp >= target_timestamp:
+            # Logs are ready!
+            say(f"✅ Logs ready (took {iteration * wait_interval} seconds)")
+            return True
+        else:
+            # Still processing
+            say(f"⏳ Waiting for parser... (attempt {iteration}/{max_iterations})")
+            say(f"   Need logs up to: {target_timestamp}")
+            say(f"   Currently have: {actual_timestamp}")
+            wait(wait_interval)
+
+    # Timeout - parser issue
+    error(f"❌ Parser didn't process logs in {max_iterations * wait_interval} seconds!")
+    error(f"   Target: {target_timestamp}")
+    error(f"   Actual: {actual_timestamp}")
+    error(f"   Gap: {calculate_gap(target_timestamp, actual_timestamp)}")
+    error(f"   Investigation needed: Check parser logs, ClickHouse status")
+    return False
+```
+
+**Two scenarios:**
+
+1. **Unit Test Scenario:**
+   ```
+   test_start = now()
+   run_unit_test()  // Takes 2-5 seconds
+   test_end = now()
+
+   target_timestamp = test_end
+   wait_for_logs_ready(target_timestamp)
+   ```
+
+2. **Passive Monitoring Scenario:**
+   ```
+   observation_start = "2025-11-15T14:00:00Z"
+   observation_end = "2025-11-15T14:30:00Z"
+
+   target_timestamp = observation_end
+   wait_for_logs_ready(target_timestamp)
+   ```
+
 ### Critical Timing Rules
 
-**⚠️ NEVER skip these waits:**
+**⚠️ Updated rules with smart polling:**
 
-1. **After DISABLE, before QUERY: Wait 10 seconds minimum**
-   - Parser reads techlog files on schedule
-   - ClickHouse needs time to index data
-   - Querying immediately = incomplete/missing data
+1. **After DISABLE, before QUERY: Use smart polling (not fixed wait!)**
+   - Call `get_log_status()` in loop
+   - Wait until `actual_timestamp >= target_timestamp`
+   - Max 50 seconds (10 × 5 sec), typically completes in 5-15 seconds
+   - If timeout: Parser issue detected automatically
 
 2. **After ENABLE, before ACTION: Wait 1-2 seconds**
    - Platform needs time to apply logcfg.xml
    - Ensures first events are captured
 
-3. **Between test iterations: DISABLE, wait, re-ENABLE**
+3. **Between test iterations: DISABLE, poll readiness, re-ENABLE**
    - Don't leave enabled between test runs
+   - Use smart polling to verify logs processed
    - Prevents log pollution from unrelated events
-   - Saves disk space
 
 ---
 
@@ -992,7 +1100,48 @@ Set a calendar reminder to check if logging is still needed after [X hours/days]
 
 ### Step 6: MCP Tool Integration
 
-When using MCP tools `configure_techlog` or `disable_techlog`:
+**Available MCP tools:**
+
+1. **configure_techlog** - Enable techlog with specific config
+2. **disable_techlog** - Write disabled template to logcfg.xml
+3. **get_tech_log** - Query processed logs from ClickHouse
+4. **get_log_status** - Check parser readiness (NEW!)
+
+#### MCP Tool: get_log_status
+
+**Purpose:** Returns timestamp of the latest processed techlog data in ClickHouse.
+
+**Usage:**
+```
+Response:
+{
+  "latest_timestamp": "2025-11-15T14:23:45.123456Z",
+  "cluster_guid": "b0881663-f2a7-4195-b7a2-f7f8e6c3a8f3",
+  "infobase_guid": "d723aefd-7992-420d-b5f9-a273fd4146be"
+}
+```
+
+**How it works:**
+- Queries ClickHouse: `SELECT MAX(event_time) FROM logs.tech_log WHERE ...`
+- Returns most recent event_time that has been processed and indexed
+- Use this to determine if logs for your target timeframe are ready
+
+**Example:**
+```
+# After test completes at 14:23:45
+target_time = "2025-11-15T14:23:45Z"
+
+# Poll until ready
+while True:
+    status = get_log_status()
+    if status.latest_timestamp >= target_time:
+        break  # Logs are ready!
+    sleep(5)  # Wait and retry
+```
+
+#### MCP Tool Usage Workflow:
+
+When using MCP tools `configure_techlog`, `disable_techlog`, and `get_log_status`:
 
 **Before calling configure_techlog:**
 1. Read `configs/cluster_map.yaml` to get cluster_guid and infobase_guid
