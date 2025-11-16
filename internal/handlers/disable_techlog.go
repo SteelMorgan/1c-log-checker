@@ -6,18 +6,28 @@ import (
 	"encoding/xml"
 	"fmt"
 	"os"
+	"path/filepath"
 )
 
 // DisableTechLogHandler handles disable_techlog MCP tool
-type DisableTechLogHandler struct{}
+type DisableTechLogHandler struct {
+	configDir string // Directory for logcfg.xml files
+}
 
 // NewDisableTechLogHandler creates a new handler
-func NewDisableTechLogHandler() *DisableTechLogHandler {
-	return &DisableTechLogHandler{}
+func NewDisableTechLogHandler(configDir string) *DisableTechLogHandler {
+	return &DisableTechLogHandler{
+		configDir: configDir,
+	}
 }
 
 // DisableTechLog disables tech log by removing logcfg.xml or emptying it
 func (h *DisableTechLogHandler) DisableTechLog(ctx context.Context, configPath string) error {
+	// Use default path if not provided
+	if configPath == "" {
+		configPath = filepath.Join(h.configDir, "logcfg.xml")
+	}
+	
 	// Check if file exists
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		return nil // Already disabled

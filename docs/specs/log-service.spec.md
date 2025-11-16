@@ -549,7 +549,7 @@ deploy/grafana/
 - [ ] Подготовить docker-compose.yml
 - [ ] Подготовить Dockerfile для log-parser
 - [ ] Подготовить Dockerfile для mcp-server
-- [ ] Создать .env.example
+- [x] Создать deploy/docker/.env.example
 - [ ] Создать configs/cluster_map.yaml (шаблон)
 
 ### 3.2 ClickHouse Schema (sprint 1)

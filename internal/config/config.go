@@ -27,6 +27,7 @@ type Config struct {
 	// MCP settings
 	MCPPort       int
 	ClusterMapPath string // Path to cluster_map.yaml (used only by MCP server, not parser)
+	TechLogConfigDir string // Directory for logcfg.xml file (mounted from host)
 
 	// Observability
 	LogLevel       string
@@ -53,6 +54,7 @@ func Load() (*Config, error) {
 
 		MCPPort:       getEnvInt("MCP_PORT", 8080),
 		ClusterMapPath: getEnv("CLUSTER_MAP_PATH", "configs/cluster_map.yaml"),
+		TechLogConfigDir: getEnv("TECHLOG_CONFIG_DIR", "/app/configs/techlog"), // Default inside container
 
 		LogLevel:       getEnv("LOG_LEVEL", "info"),
 		TracingEnabled: getEnvBool("TRACING_ENABLED", false),

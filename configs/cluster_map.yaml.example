@@ -3,16 +3,16 @@
 
 clusters:
   # Example cluster
-   "b0881663-f2a7-4195-b7a2-f7f8e6c3a8f3":
-     name: "Local cluster"
-     notes: "My test cluster"
+  # "you cluster guid":
+  #   name: "cluster name here"
+  #   notes: "any your notes"
 
 infobases:
   # Example infobase
-   "d723aefd-7992-420d-b5f9-a273fd4146be":
-     name: "GBIG PAM"
-     cluster_guid: "b0881663-f2a7-4195-b7a2-f7f8e6c3a8f3"
-     notes: "AI Test GBIG PUM base"
+  # "your base guid":
+  #   name: "your banse name"
+  #   cluster_guid: "you cluster guid"
+  #  notes: "any notes about base"
 
 # How to get GUIDs:
 # 1. Using rac.exe (1C:Enterprise Administration Console):

@@ -9,7 +9,7 @@
 ## Контуры решения
 
 - Вынести инфраструктуру docker-compose: `go-parser`, `clickhouse`, `grafana`, `mcp-server`, тома для логов и offset-хранилища.
-- Заложить конфиги: `configs/cluster_map.yaml`, `.env` с `LOG_DIRS`, `TECHLOG_DIRS`, `LOG_RETENTION_DAYS`, `READ_ONLY` и GUID параметрами tool.
+- Заложить конфиги: `configs/cluster_map.yaml`, `deploy/docker/.env` с `LOG_DIRS`, `TECHLOG_DIRS`, `LOG_RETENTION_DAYS`, `READ_ONLY` и GUID параметрами tool.
 - Описать схему ClickHouse: таблицы `event_log` (журнал регистрации), `tech_log` (технологический журнал, хранит полный набор полей), `log_offsets` (зеркало смещений, опционально).
 - Спроектировать Go-сервис парсера: модули чтения `.lgf/.lgp`, tail tech-журналов (text/json), агрегатор батчей, writer в ClickHouse, локальное offset-хранилище (BoltDB + volume), режим <1s polling.
 - Спроектировать Go MCP-сервер: инструменты чтения логов (минимальный/расширенный режимы JSON), получение GUIDов через `rac`, конфигурирование.
@@ -36,7 +36,7 @@
 3. `infra-structure`
    - Каталоги: `cmd/parser`, `cmd/mcp`, `internal/logreader`, `internal/techlog`, `internal/offset`, `configs`, `deploy/docker`, `docs`.
    - docker-compose: сервисы `log-parser`, `clickhouse`, `grafana`, `mcp-server`; сети, volumes.
-   - `.env`: `LOG_DIRS`, `TECHLOG_DIRS`, параметры ClickHouse, retention, режимы.
+   - `deploy/docker/.env`: `LOG_DIRS`, `TECHLOG_DIRS`, параметры ClickHouse, retention, режимы.
    - `configs/cluster_map.yaml` с алиасами GUIDов.
 
 4. `clickhouse-schema`

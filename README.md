@@ -157,19 +157,35 @@ cd 1c-log-checker
 Скопируйте пример конфигурации:
 
 ```powershell
-Copy-Item env.example .env
+cd deploy/docker
+Copy-Item .env.example .env
 ```
 
-Отредактируйте `.env` и укажите пути к логам:
+Отредактируйте `deploy/docker/.env` и укажите пути:
 
 ```ini
 LOG_DIRS=C:\Program Files\1cv8\srvinfo
-TECHLOG_DIRS=C:\ProgramData\1C\1Cv8\logs
+TECHLOG_CONFIG_DIR=D:\My Projects\FrameWork 1C\1c-log-checker\configs\techlog\
+TECHLOG_DIRS=D:\My Projects\FrameWork 1C\1c-log-checker\tech_logs
 ```
 
-### 3. Настройка GUID-маппинга (опционально)
+Переопределите место хранения конфигурации технологического журнала (сервис не может работать с системной директорией)
 
-Отредактируйте `configs/cluster_map.yaml` для маппинга GUIDов:
+По-умолчанию я предлагаю его поместить в каталоге проекта. Файл будет создан в `configs/techlog/logcfg.xml`.
+
+Согласно ИТС (https://its.1c.ru/db/v8311doc#bookmark:adm:TI000000376) в файл conf.cfg нужно добавить строку, указывающую где платформе искать файлы конфига, если их нет в "стандартном каталоге".
+conf.cfg хранится в нескольких местах - первично читается из каталога с платформой конкретной версии. В нем указана переадресация в каталог C:\Program Files\1cv8\conf\, что бы для всех версий использовались одни настройки. 
+Переопределить каталог еще раз из директории C:\Program Files\1cv8\conf\ НЕ удаётся (на 8.3.27 не сработало), поэтому переопределяем в каталоге каждой платформе, которую используем (Пример: C:\Program Files\1cv8\8.3.27.1719\bin\conf)
+
+```ini
+# Указываем тот же путь, что указали в файле deploy/docker/.env в параметре TECHLOG_CONFIG_DIR
+ConfLocation=D:\ProjectCatalog\configs\techlog\
+```
+
+
+### 3. Настройка GUID-маппинга
+
+В корень каждого проекта поместите файл `cluster_map.yaml`. Образец тут: `configs/cluster_map.yaml`. Это необходимо, что бы агент знал гуид базы/кластера с которыми работает в проекте и мог обращаться за логами конкретной базы.
 
 ```yaml
 clusters:
@@ -182,7 +198,7 @@ infobases:
     cluster_guid: "your-cluster-guid"
 ```
 
-Как получить GUIDы — см. [docs/guides/get-guids.md](docs/guides/get-guids.md)
+Как получить GUIDы — см. [docs/guides/get-guids.md](docs/guides/get-guids.md) или любой другой удобный для вас способ (в гугле много вариантов)
 
 ### 4. Запуск
 
@@ -218,8 +234,8 @@ docker-compose up -d
 
 ### Файлы конфигурации
 
-- **`.env`** — переменные окружения
-- **`configs/cluster_map.yaml`** — маппинг GUID → имена кластеров/баз
+- **`deploy/docker/.env`** — переменные окружения (скопируйте из `deploy/docker/.env.example`)
+- **`cluster_map.yaml`** — маппинг GUID → имена кластеров/баз (размещается в корне проекта, образец в `configs/cluster_map.yaml`)
 - **`deploy/docker/docker-compose.yml`** — конфигурация Docker Compose
 
 ---

@@ -114,13 +114,25 @@
     },
     {
       "name": "configure_techlog",
-      "description": "Generate logcfg.xml configuration for 1C technical log.\n\nThis tool creates XML configuration content that can be saved to logcfg.xml file to enable technical logging.\n\nCommon use cases:\n- Error tracking: events=['EXCP', 'QERR', 'EXCPCNTX']\n- Performance analysis: events=['DBMSSQL', 'SDBL'], properties=['sql', 'planSQLText', 'duration', 'Rows']\n- Lock investigation: events=['TLOCK', 'TTIMEOUT', 'TDEADLOCK', 'CONN', 'SESN']\n\nIMPORTANT: Technical logging generates large files. Always:\n- Set reasonable history (12-48 hours max)\n- Enable only needed events\n- Disable logging after debugging (use disable_techlog)\n\nExample workflow:\n1. Call: configure_techlog(location='D:\\\\1CLogs\\\\Errors', history=24, events=['EXCP', 'QERR'], properties=['all'])\n2. Save returned XML to: C:\\\\Program Files\\\\1cv8\\\\conf\\\\logcfg.xml\n3. Restart 1C services to apply\n4. After debugging → call disable_techlog",
+      "description": "Generate logcfg.xml configuration for 1C technical log.\n\nThis tool creates XML configuration content that can be saved to logcfg.xml file to enable technical logging.\n\nIMPORTANT: The 'location' attribute in config XML MUST follow the pattern:\n<base_path>/<cluster_guid>/<infobase_guid>\n\nExample:\n<log location=\"D:\\TechLogs\\b0881663-f2a7-4195-b7a2-f7f8e6c3a8f3\\d723aefd-7992-420d-b5f9-a273fd4146be\">\n\nThe tool will validate this structure and return an error if it doesn't match.\n\nCommon use cases:\n- Error tracking: events=['EXCP', 'QERR', 'EXCPCNTX']\n- Performance analysis: events=['DBMSSQL', 'SDBL'], properties=['sql', 'planSQLText', 'duration', 'Rows']\n- Lock investigation: events=['TLOCK', 'TTIMEOUT', 'TDEADLOCK', 'CONN', 'SESN']\n\nIMPORTANT: Technical logging generates large files. Always:\n- Set reasonable history (12-48 hours max)\n- Enable only needed events\n- Disable logging after debugging (use disable_techlog)\n\nExample workflow:\n1. Read configs/cluster_map.yaml to get cluster_guid and infobase_guid\n2. Call: configure_techlog(cluster_guid='...', infobase_guid='...', location='D:\\\\TechLogs\\\\<cluster_guid>\\\\<infobase_guid>', history=24, events=['EXCP', 'QERR'], properties=['all'])\n3. Save returned XML to: C:\\\\Program Files\\\\1cv8\\\\conf\\\\logcfg.xml\n4. Restart 1C services to apply\n5. After debugging → call disable_techlog",
       "inputSchema": {
         "type": "object",
         "properties": {
+          "cluster_guid": {
+            "type": "string",
+            "description": "Cluster GUID (MUST be obtained from configs/cluster_map.yaml). Required for path validation."
+          },
+          "infobase_guid": {
+            "type": "string",
+            "description": "Infobase GUID (MUST be obtained from configs/cluster_map.yaml). Required for path validation."
+          },
           "location": {
             "type": "string",
-            "description": "Directory path for log files (e.g., 'D:\\\\1CLogs\\\\Errors'). Will be created if not exists."
+            "description": "Directory path for log files. MUST follow pattern: <base_path>/<cluster_guid>/<infobase_guid>\nExample: 'D:\\\\TechLogs\\\\b0881663-f2a7-4195-b7a2-f7f8e6c3a8f3\\\\d723aefd-7992-420d-b5f9-a273fd4146be'\nWill be created if not exists. Path will be validated against provided cluster_guid and infobase_guid."
+          },
+          "config_path": {
+            "type": "string",
+            "description": "Optional path to save logcfg.xml file. If provided, file will be created/updated automatically.\nDefault Windows: 'C:\\\\Program Files\\\\1cv8\\\\conf\\\\logcfg.xml'\nIf not provided, only XML content is returned without saving."
           },
           "history": {
             "type": "integer",
@@ -151,7 +163,7 @@
             "default": ["all"]
           }
         },
-        "required": ["location", "history", "events"]
+        "required": ["cluster_guid", "infobase_guid", "location", "history", "events"]
       }
     },
     {

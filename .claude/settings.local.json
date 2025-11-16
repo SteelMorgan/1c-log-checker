@@ -14,7 +14,15 @@
       "Bash(docker restart:*)",
       "Bash(docker-compose:*)",
       "Bash(docker stop:*)",
-      "Bash(docker rm:*)"
+      "Bash(docker rm:*)",
+      "Skill(skill-creator-v2)",
+      "WebFetch(domain:infostart.ru)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(go test:*)",
+      "Bash(go build:*)",
+      "Bash(docker volume:*)",
+      "Bash(curl:*)"
     ],
     "deny": [],
     "ask": []

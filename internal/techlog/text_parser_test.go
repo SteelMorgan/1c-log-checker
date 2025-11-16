@@ -2,6 +2,7 @@ package techlog
 
 import (
 	"testing"
+	"time"
 	
 	"github.com/1c-log-checker/internal/domain"
 )
@@ -44,7 +45,9 @@ func TestParseTextLine_PlainFormat(t *testing.T) {
 	
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			record, err := ParseTextLine(tt.line)
+			// For plain format, timestamp is in the line itself, so fileTimestamp is not used
+			// Use current time as placeholder
+			record, err := ParseTextLine(tt.line, time.Now())
 			
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ParseTextLine() error = %v, wantErr %v", err, tt.wantErr)
@@ -59,6 +62,9 @@ func TestParseTextLine_PlainFormat(t *testing.T) {
 }
 
 func TestParseTextLine_HierarchicalFormat(t *testing.T) {
+	// For hierarchical format, timestamp comes from filename
+	// Example filename: 25011408.log = 2025-01-14 08:00:00
+	fileTimestamp := time.Date(2025, 1, 14, 8, 0, 0, 0, time.Local)
 	tests := []struct {
 		name    string
 		line    string
@@ -83,7 +89,8 @@ func TestParseTextLine_HierarchicalFormat(t *testing.T) {
 	
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			record, err := ParseTextLine(tt.line)
+			// For hierarchical format, timestamp comes from filename
+			record, err := ParseTextLine(tt.line, fileTimestamp)
 			
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ParseTextLine() error = %v, wantErr %v", err, tt.wantErr)

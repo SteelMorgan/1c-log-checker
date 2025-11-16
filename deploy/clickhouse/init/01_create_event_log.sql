@@ -65,12 +65,55 @@ ORDER BY (cluster_guid, infobase_guid, event_time, session_id, record_hash)
 TTL event_time + INTERVAL 30 DAY
 SETTINGS index_granularity = 8192;
 
--- Indexes for faster queries
+-- Indexes for faster queries (индексы на все поля для оптимизации запросов)
+-- Основные поля
 ALTER TABLE logs.event_log ADD INDEX idx_level level TYPE set(0) GRANULARITY 4;
 ALTER TABLE logs.event_log ADD INDEX idx_event event TYPE set(0) GRANULARITY 4;
+ALTER TABLE logs.event_log ADD INDEX idx_event_presentation event_presentation TYPE bloom_filter(0.01) GRANULARITY 4;
+
+-- Идентификация базы/кластера
+ALTER TABLE logs.event_log ADD INDEX idx_cluster_guid cluster_guid TYPE bloom_filter(0.01) GRANULARITY 4;
+ALTER TABLE logs.event_log ADD INDEX idx_cluster_name cluster_name TYPE bloom_filter(0.01) GRANULARITY 4;
+ALTER TABLE logs.event_log ADD INDEX idx_infobase_guid infobase_guid TYPE bloom_filter(0.01) GRANULARITY 4;
+ALTER TABLE logs.event_log ADD INDEX idx_infobase_name infobase_name TYPE bloom_filter(0.01) GRANULARITY 4;
+
+-- Пользователь и компьютер
 ALTER TABLE logs.event_log ADD INDEX idx_user_name user_name TYPE set(0) GRANULARITY 4;
+ALTER TABLE logs.event_log ADD INDEX idx_user_id user_id TYPE bloom_filter(0.01) GRANULARITY 4;
+ALTER TABLE logs.event_log ADD INDEX idx_computer computer TYPE set(0) GRANULARITY 4;
+
+-- Приложение
+ALTER TABLE logs.event_log ADD INDEX idx_application application TYPE set(0) GRANULARITY 4;
+ALTER TABLE logs.event_log ADD INDEX idx_application_presentation application_presentation TYPE bloom_filter(0.01) GRANULARITY 4;
+
+-- Сеанс и соединение
 ALTER TABLE logs.event_log ADD INDEX idx_session session_id TYPE minmax GRANULARITY 4;
+ALTER TABLE logs.event_log ADD INDEX idx_connection_id connection_id TYPE minmax GRANULARITY 4;
+ALTER TABLE logs.event_log ADD INDEX idx_connection connection TYPE bloom_filter(0.01) GRANULARITY 4;
+
+-- Транзакция
+ALTER TABLE logs.event_log ADD INDEX idx_transaction_status transaction_status TYPE set(0) GRANULARITY 4;
 ALTER TABLE logs.event_log ADD INDEX idx_transaction transaction_id TYPE bloom_filter(0.01) GRANULARITY 4;
 ALTER TABLE logs.event_log ADD INDEX idx_transaction_number transaction_number TYPE minmax GRANULARITY 4;
+ALTER TABLE logs.event_log ADD INDEX idx_transaction_datetime transaction_datetime TYPE minmax GRANULARITY 4;
+
+-- Разделение данных
+ALTER TABLE logs.event_log ADD INDEX idx_data_separation data_separation TYPE bloom_filter(0.01) GRANULARITY 4;
+
+-- Метаданные
+ALTER TABLE logs.event_log ADD INDEX idx_metadata_name metadata_name TYPE bloom_filter(0.01) GRANULARITY 4;
+ALTER TABLE logs.event_log ADD INDEX idx_metadata_presentation metadata_presentation TYPE bloom_filter(0.01) GRANULARITY 4;
+
+-- Детальная информация
+ALTER TABLE logs.event_log ADD INDEX idx_comment comment TYPE bloom_filter(0.01) GRANULARITY 4;
+ALTER TABLE logs.event_log ADD INDEX idx_data data TYPE bloom_filter(0.01) GRANULARITY 4;
+ALTER TABLE logs.event_log ADD INDEX idx_data_presentation data_presentation TYPE bloom_filter(0.01) GRANULARITY 4;
+
+-- Сервер
+ALTER TABLE logs.event_log ADD INDEX idx_server server TYPE set(0) GRANULARITY 4;
+ALTER TABLE logs.event_log ADD INDEX idx_primary_port primary_port TYPE minmax GRANULARITY 4;
+ALTER TABLE logs.event_log ADD INDEX idx_secondary_port secondary_port TYPE minmax GRANULARITY 4;
+
+-- Дедупликация
 ALTER TABLE logs.event_log ADD INDEX idx_hash record_hash TYPE bloom_filter(0.01) GRANULARITY 4;
 

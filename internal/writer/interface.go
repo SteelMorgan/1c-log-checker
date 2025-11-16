@@ -14,6 +14,9 @@ type BatchWriter interface {
 	// WriteTechLog writes a tech log record to the batch
 	WriteTechLog(ctx context.Context, record *domain.TechLogRecord) error
 	
+	// WriteParserMetrics writes parser performance metrics to ClickHouse
+	WriteParserMetrics(ctx context.Context, metrics *domain.ParserMetrics) error
+	
 	// Flush forces writing all pending records to ClickHouse
 	Flush(ctx context.Context) error
 	

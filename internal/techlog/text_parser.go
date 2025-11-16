@@ -11,7 +11,8 @@ import (
 
 // ParseTextLine parses a single line from text-format tech log
 // Supports both hierarchical (mm:ss.micro-dur) and plain (ISO timestamp) formats
-func ParseTextLine(line string) (*domain.TechLogRecord, error) {
+// fileTimestamp is used for hierarchical format to extract full date from filename
+func ParseTextLine(line string, fileTimestamp time.Time) (*domain.TechLogRecord, error) {
 	if line == "" {
 		return nil, fmt.Errorf("empty line")
 	}
@@ -34,7 +35,7 @@ func ParseTextLine(line string) (*domain.TechLogRecord, error) {
 		remainder, err = parsePlainTimestamp(line, record)
 	} else {
 		// Hierarchical format: 45:31.831006-1,SCALL,...
-		remainder, err = parseHierarchicalTimestamp(line, record)
+		remainder, err = parseHierarchicalTimestamp(line, record, fileTimestamp)
 	}
 	
 	if err != nil {
@@ -58,6 +59,7 @@ func ParseTextLine(line string) (*domain.TechLogRecord, error) {
 	record.Depth = uint8(depth)
 	
 	// Properties (key=value pairs separated by commas)
+	// Note: record.Name is already set, so setRecordProperty can use it for context
 	if err := parseProperties(parts[2], record); err != nil {
 		return nil, fmt.Errorf("failed to parse properties: %w", err)
 	}
@@ -104,8 +106,9 @@ func parsePlainTimestamp(line string, record *domain.TechLogRecord) (string, err
 
 // parseHierarchicalTimestamp parses hierarchical format timestamp
 // Format: 45:31.831006-1
-// Note: Full date comes from file name (YYYYMMDD)
-func parseHierarchicalTimestamp(line string, record *domain.TechLogRecord) (string, error) {
+// Note: Full date comes from file name (yymmddhh)
+// fileTimestamp should be extracted from filename using ExtractTimestampFromFilename
+func parseHierarchicalTimestamp(line string, record *domain.TechLogRecord, fileTimestamp time.Time) (string, error) {
 	// Find first comma
 	commaIdx := strings.Index(line, ",")
 	if commaIdx == -1 {
@@ -146,12 +149,11 @@ func parseHierarchicalTimestamp(line string, record *domain.TechLogRecord) (stri
 		return "", fmt.Errorf("invalid microseconds: %w", err)
 	}
 	
-	// TODO: Extract hour from filename (YYYYMMDDHH)
-	// For now, use current date as base
-	now := time.Now()
+	// Use timestamp from filename (extracted from yymmddhh pattern)
+	// fileTimestamp already has year, month, day, hour set
 	record.Timestamp = time.Date(
-		now.Year(), now.Month(), now.Day(),
-		0, minutes, seconds, microsec*1000,
+		fileTimestamp.Year(), fileTimestamp.Month(), fileTimestamp.Day(),
+		fileTimestamp.Hour(), minutes, seconds, microsec*1000,
 		time.Local,
 	)
 	
@@ -226,44 +228,6 @@ func parseProperties(propsStr string, record *domain.TechLogRecord) error {
 	return nil
 }
 
-// setRecordProperty sets a property in the record, handling known core fields
-func setRecordProperty(record *domain.TechLogRecord, key, value string) {
-	switch key {
-	case "level":
-		record.Level = value
-	case "process":
-		record.Process = value
-	case "OSThread":
-		if val, err := strconv.ParseUint(value, 10, 32); err == nil {
-			record.OSThread = uint32(val)
-		}
-	case "ClientID":
-		if val, err := strconv.ParseUint(value, 10, 64); err == nil {
-			record.ClientID = val
-		}
-	case "SessionID":
-		record.SessionID = value
-	case "Trans", "TransactionID":
-		record.TransactionID = value
-	case "Usr":
-		record.User = value
-	case "AppID":
-		record.ApplicationID = value
-	case "ConnID":
-		if val, err := strconv.ParseUint(value, 10, 64); err == nil {
-			record.ConnectionID = val
-		}
-	case "Interface":
-		record.Interface = value
-	case "Method":
-		record.Method = value
-	case "CallID":
-		if val, err := strconv.ParseUint(value, 10, 64); err == nil {
-			record.CallID = val
-		}
-	default:
-		// Store in dynamic properties
-		record.Properties[key] = value
-	}
-}
+// setRecordProperty is now in property_mapper.go
+// This function is kept for backward compatibility but delegates to the new implementation
 

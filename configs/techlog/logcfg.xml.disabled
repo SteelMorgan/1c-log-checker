@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<config xmlns="http://v8.1c.ru/v8/tech-log">
+  <log location="D:\My Projects\FrameWork 1C\1c-log-checker\tech_logs\b0881663-f2a7-4195-b7a2-f7f8e6c3a8f3/d723aefd-7992-420d-b5f9-a273fd4146be" history="24" format="json">
+    <event>
+        <eq property="name" value="admin"/>
+    </event>
+    <event>
+        <eq property="name" value="conn"/>
+    </event>
+    <event>
+        <eq property="name" value="excp"/>
+    </event>
+    <event>
+        <eq property="name" value="proc"/>
+    </event>
+    <event>
+        <eq property="name" value="qerr"/>
+    </event>
+    <event>
+        <eq property="name" value="scom"/>
+    </event>
+    <property name="all"/>
+  </log>
+</config>

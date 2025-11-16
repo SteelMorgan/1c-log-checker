@@ -64,7 +64,7 @@ func TestExtractGUIDsFromPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotClusterGUID, gotInfobaseGUID, err := extractGUIDsFromPath(tt.path)
+			gotClusterGUID, gotInfobaseGUID, err := ExtractGUIDsFromPath(tt.path)
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("extractGUIDsFromPath() error = %v, wantErr %v", err, tt.wantErr)
@@ -89,6 +89,7 @@ func TestValidateTechLogPath(t *testing.T) {
 		path                 string
 		expectedClusterGUID  string
 		expectedInfobaseGUID string
+		techLogDirs          []string
 		wantErr              bool
 		errContains          string
 	}{
@@ -97,6 +98,7 @@ func TestValidateTechLogPath(t *testing.T) {
 			path:                 `D:\TechLogs\b0881663-f2a7-4195-b7a2-f7f8e6c3a8f3\d723aefd-7992-420d-b5f9-a273fd4146be\rphost_1234\25011408.log`,
 			expectedClusterGUID:  "b0881663-f2a7-4195-b7a2-f7f8e6c3a8f3",
 			expectedInfobaseGUID: "d723aefd-7992-420d-b5f9-a273fd4146be",
+			techLogDirs:          []string{`D:\TechLogs`},
 			wantErr:              false,
 		},
 		{
@@ -104,6 +106,7 @@ func TestValidateTechLogPath(t *testing.T) {
 			path:                 `D:\TechLogs\B0881663-F2A7-4195-B7A2-F7F8E6C3A8F3\D723AEFD-7992-420D-B5F9-A273FD4146BE\rphost_1234\25011408.log`,
 			expectedClusterGUID:  "b0881663-f2a7-4195-b7a2-f7f8e6c3a8f3",
 			expectedInfobaseGUID: "d723aefd-7992-420d-b5f9-a273fd4146be",
+			techLogDirs:          []string{`D:\TechLogs`},
 			wantErr:              false,
 		},
 		{
@@ -111,6 +114,7 @@ func TestValidateTechLogPath(t *testing.T) {
 			path:                 `D:\TechLogs\aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\d723aefd-7992-420d-b5f9-a273fd4146be\rphost_1234\25011408.log`,
 			expectedClusterGUID:  "b0881663-f2a7-4195-b7a2-f7f8e6c3a8f3",
 			expectedInfobaseGUID: "d723aefd-7992-420d-b5f9-a273fd4146be",
+			techLogDirs:          []string{`D:\TechLogs`},
 			wantErr:              true,
 			errContains:          "cluster_guid mismatch",
 		},
@@ -119,6 +123,7 @@ func TestValidateTechLogPath(t *testing.T) {
 			path:                 `D:\TechLogs\b0881663-f2a7-4195-b7a2-f7f8e6c3a8f3\bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\rphost_1234\25011408.log`,
 			expectedClusterGUID:  "b0881663-f2a7-4195-b7a2-f7f8e6c3a8f3",
 			expectedInfobaseGUID: "d723aefd-7992-420d-b5f9-a273fd4146be",
+			techLogDirs:          []string{`D:\TechLogs`},
 			wantErr:              true,
 			errContains:          "infobase_guid mismatch",
 		},
@@ -127,6 +132,7 @@ func TestValidateTechLogPath(t *testing.T) {
 			path:                 `D:\TechLogs\cluster1\base1\rphost_1234\25011408.log`,
 			expectedClusterGUID:  "b0881663-f2a7-4195-b7a2-f7f8e6c3a8f3",
 			expectedInfobaseGUID: "d723aefd-7992-420d-b5f9-a273fd4146be",
+			techLogDirs:          []string{`D:\TechLogs`},
 			wantErr:              true,
 			errContains:          "expected 2 GUIDs",
 		},
@@ -134,7 +140,7 @@ func TestValidateTechLogPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateTechLogPath(tt.path, tt.expectedClusterGUID, tt.expectedInfobaseGUID)
+			err := ValidateTechLogPath(tt.path, tt.expectedClusterGUID, tt.expectedInfobaseGUID, tt.techLogDirs)
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("validateTechLogPath() error = %v, wantErr %v", err, tt.wantErr)

@@ -188,7 +188,7 @@ func parseLgpFile(lgpFile, lgfFile string) ([]*domain.EventLogRecord, error) {
 	}
 
 	// Create parser
-	parser := eventlog.NewLgpParser("", "", lgfReader)
+	parser := eventlog.NewLgpParser("", "", "", "", lgfReader)
 
 	// Parse file
 	records, err := parser.Parse(file)

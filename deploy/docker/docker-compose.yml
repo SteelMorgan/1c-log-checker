@@ -68,12 +68,14 @@ services:
       - "${MCP_PORT:-8080}:8080"
     volumes:
       - ../../configs:/app/configs:ro
+      - ${TECHLOG_CONFIG_DIR:-../../configs/techlog}:/app/techlog-config:rw
     environment:
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: ${CLICKHOUSE_PORT:-9000}
       CLICKHOUSE_DB: ${CLICKHOUSE_DB:-logs}
       MCP_PORT: ${MCP_PORT:-8080}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      TECHLOG_CONFIG_DIR: /app/techlog-config
     networks:
       - internal
       - monitoring

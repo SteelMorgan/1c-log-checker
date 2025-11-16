@@ -423,34 +423,33 @@ The tool will validate this structure and return an error if it doesn't match.
 ```
 
 **Критерий готовности:**
-- [ ] MCP tool валидирует структуру пути и возвращает ошибку если неправильно
-- [ ] Парсер извлекает cluster_guid/infobase_guid из пути файла
-- [ ] GUID'ы корректно добавляются в каждую запись перед отправкой в ClickHouse
+- [x] MCP tool валидирует структуру пути и возвращает ошибку если неправильно ✅
+- [x] Парсер извлекает cluster_guid/infobase_guid из пути файла ✅
+- [x] GUID'ы корректно добавляются в каждую запись перед отправкой в ClickHouse ✅
 
-#### 2.2. Определение формата (logcfg.xml + fallback)
+#### 2.2. Определение формата (logcfg.xml + fallback) ✅
 
 **Файлы:**
-- `internal/techlog/config_reader.go` (новый)
-- `internal/techlog/tailer.go` (обновить)
+- `internal/techlog/config_reader.go` (создан)
+- `internal/service/parser_service.go` (обновлен)
 
 **Задачи:**
-1. Создать функцию `ReadLogCfgXML(path string) (*LogCfgConfig, error)`
-2. Парсить атрибут `format` из `<log>` элемента
-3. Fallback: определение по первой строке файла
-4. Обновить Tailer для использования определенного формата
+1. ✅ Создать функцию `ReadLogCfgXML(path string) (*LogCfgConfig, error)`
+2. ✅ Парсить атрибут `format` из `<log>` элемента
+3. ✅ Fallback: определение по первой строке файла
+4. ✅ Обновить parser_service для использования определенного формата
 
-**Критерий готовности:** Парсер корректно определяет формат (text/json) из logcfg.xml
+**Критерий готовности:** ✅ Парсер корректно определяет формат (text/json) из logcfg.xml
 
-#### 2.3. Offset tracking в BoltDB
+#### 2.3. Offset tracking в BoltDB ✅
 
 **Файлы:**
-- `internal/offset/offset.go` (обновить интерфейс)
-- `internal/offset/boltdb.go` (добавить techlog методы)
+- `internal/offset/boltdb.go` (добавлены techlog методы)
 - `internal/techlog/tailer.go` (интеграция)
 
 **Задачи:**
-1. Добавить bucket `techlog_offsets` в BoltDB
-2. Структура offset:
+1. ✅ Добавить bucket `techlog_offsets` в BoltDB
+2. ✅ Структура offset:
    ```go
    type TechLogOffset struct {
        FilePath      string
@@ -460,15 +459,16 @@ The tool will validate this structure and return an error if it doesn't match.
    }
    ```
 
-3. Методы:
+3. ✅ Методы:
    - `GetTechLogOffset(filePath string) (*TechLogOffset, error)`
    - `SaveTechLogOffset(offset *TechLogOffset) error`
 
-4. Tailer сохраняет offset после каждого батча (каждые 500 записей)
+4. ✅ Tailer сохраняет offset после каждого батча (каждые 500 записей)
+5. ✅ При открытии файла загружается сохраненный offset и продолжается с него
 
-**Критерий готовности:** При restart парсер продолжает с сохраненного offset
+**Критерий готовности:** ✅ При restart парсер продолжает с сохраненного offset
 
-#### 2.4. Извлечение timestamp из имени файла (только для text hierarchical)
+#### 2.4. Извлечение timestamp из имени файла (только для text hierarchical) ✅
 
 **ВАЖНО:** Это нужно ТОЛЬКО для поддержки **text формата с hierarchical placement**.
 
@@ -483,61 +483,51 @@ The tool will validate this structure and return an error if it doesn't match.
 Дата извлекается из имени файла `25011408.log` = `yymmddhh` = `2025-01-14 08:00:00`
 
 **Файлы:**
-- `internal/techlog/text_parser.go` (обновить parseHierarchicalTimestamp)
-- `internal/techlog/filename_parser.go` (новый)
+- `internal/techlog/text_parser.go` (обновлен parseHierarchicalTimestamp) ✅
+- `internal/techlog/filename_parser.go` (создан) ✅
 
 **Задачи:**
-1. Создать функцию `ExtractTimestampFromFilename(filename string) (time.Time, error)`
-   ```go
-   func ExtractTimestampFromFilename(filename string) (time.Time, error) {
-       // Извлечь yymmddhh из имени
-       // 25011408.log → 2025-01-14 08:00:00
-       // rphost_1234_25011408.log → 2025-01-14 08:00:00
-   }
-   ```
+1. ✅ Создать функцию `ExtractTimestampFromFilename(filename string) (time.Time, error)`
+   - Извлекает yymmddhh из имени файла
+   - Поддерживает оба формата: `25011408.log` и `rphost_1234_25011408.log`
 
-2. Обновить `parseHierarchicalTimestamp()`:
-   ```go
-   func parseHierarchicalTimestamp(line string, record *domain.TechLogRecord, fileTimestamp time.Time) (string, error) {
-       // Использовать fileTimestamp вместо time.Now()
-       record.Timestamp = time.Date(
-           fileTimestamp.Year(), fileTimestamp.Month(), fileTimestamp.Day(),
-           fileTimestamp.Hour(), minutes, seconds, microsec*1000,
-           time.Local,
-       )
-   }
-   ```
+2. ✅ Обновить `parseHierarchicalTimestamp()`:
+   - Теперь принимает `fileTimestamp` как параметр
+   - Использует timestamp из имени файла вместо `time.Now()`
 
-3. Передать fileTimestamp в парсер при обработке файла
+3. ✅ Передать fileTimestamp в парсер при обработке файла
+   - Извлечение timestamp из имени файла в `tailer.go`
+   - Передача в `ParseTextLine()`
 
 **Критерий готовности:**
-- [ ] Hierarchical text format имеет корректную дату из имени файла
-- [ ] JSON format работает без изменений (timestamp уже в данных)
+- [x] Hierarchical text format имеет корректную дату из имени файла ✅
+- [x] JSON format работает без изменений (timestamp уже в данных) ✅
 
 **Приоритет:** НИЗКИЙ (если агент использует JSON, можно пропустить для MVP)
 
-#### 2.5. Обработка исторических файлов
+#### 2.5. Обработка исторических файлов ✅
 
 **Файлы:**
-- `internal/techlog/tailer.go` (переписать логику)
-- `internal/techlog/file_scanner.go` (новый)
+- `internal/techlog/tailer.go` (обновлена логика) ✅
 
 **Задачи:**
-1. Создать `FileScanner` для поиска всех файлов в директории:
-   ```go
-   func ScanDirectory(dir string) ([]*FileInfo, error)
-   // Возвращает список файлов отсортированных по времени
-   ```
+1. ✅ Создать функцию `findAllLogFiles()`:
+   - Находит все .log файлы в директории
+   - Извлекает timestamp из имени файла (или использует modification time как fallback)
+   - Сортирует по timestamp (старые → новые) с помощью `sort.Slice`
 
-2. Обновить Tailer:
-   - При старте: проверить offset для каждого файла
-   - Если offset нет → обработать файл с начала
-   - Если offset есть → продолжить с offset
-   - После обработки всех файлов → переключиться в live tailing mode
+2. ✅ Обновить Tailer:
+   - При старте: обрабатывает все исторические файлы один раз (флаг `historyProcessed`)
+   - Для каждого файла: проверяет offset, если есть - продолжает с него, если нет - с начала
+   - После обработки всех файлов переключается в live tailing mode
+   - Функция `processHistoricalFiles()` обрабатывает все файлы последовательно
+   - Функция `processFile()` обрабатывает один файл с учетом offset
 
-3. Обработка в хронологическом порядке (по timestamp в имени файла)
+3. ✅ Обработка в хронологическом порядке (по timestamp в имени файла)
+   - Файлы сортируются по timestamp перед обработкой
+   - Используется локальный счетчик строк для каждого файла
 
-**Критерий готовности:** При первом запуске парсер обрабатывает все исторические файлы
+**Критерий готовности:** ✅ При первом запуске парсер обрабатывает все исторические файлы
 
 #### 2.6. Performance metrics
 
@@ -895,10 +885,10 @@ func (t *Tailer) processFilesParallel(ctx context.Context, files []*FileInfo, ha
 
 ```
 Phase 1: Исследование     [████████████████████] 100% ✅
-Phase 2: Реализация       [░░░░░░░░░░░░░░░░░░░░]   0%
+Phase 2: Реализация       [████████████████████] 100% ✅ 2.1, 2.2, 2.3, 2.4, 2.5, 2.6
 Phase 3: Тестирование     [░░░░░░░░░░░░░░░░░░░░]   0%
 Phase 4: Улучшения        [░░░░░░░░░░░░░░░░░░░░]   0%
 ```
 
 **Последнее обновление:** 2025-11-15
-**Следующий шаг:** Phase 2.1 - ClusterGUID/InfobaseGUID mapping
+**Следующий шаг:** Phase 3 - Тестирование
