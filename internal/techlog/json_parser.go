@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/1c-log-checker/internal/domain"
@@ -15,7 +16,12 @@ func ParseJSONLine(line string) (*domain.TechLogRecord, error) {
 	if line == "" {
 		return nil, fmt.Errorf("empty line")
 	}
-	
+
+	// Remove BOM (Byte Order Mark) if present
+	// UTF-8 BOM is "\ufeff" (EF BB BF in hex)
+	line = strings.TrimPrefix(line, "\ufeff")
+	line = strings.TrimPrefix(line, "\uFEFF")
+
 	// Parse JSON into map
 	var data map[string]interface{}
 	if err := json.Unmarshal([]byte(line), &data); err != nil {
@@ -117,19 +123,18 @@ func ParseJSONLine(line string) (*domain.TechLogRecord, error) {
 		}
 	}
 	
-	// Store all other fields in Properties (dynamic properties)
+	// Extract all other fields using setRecordProperty for consistency
+	// This ensures all fields are mapped correctly to struct fields
 	coreFields := map[string]bool{
 		"ts": true, "duration": true, "name": true, "level": true,
-		"depth": true, "process": true, "OSThread": true, "ClientID": true,
-		"SessionID": true, "Trans": true, "TransactionID": true,
-		"Usr": true, "AppID": true, "ConnID": true,
-		"Interface": true, "Method": true, "CallID": true,
+		"depth": true, "process": true, "OSThread": true,
 	}
 	
 	for key, val := range data {
 		if !coreFields[key] {
-			// Convert to string and store in properties
-			record.Properties[key] = fmt.Sprintf("%v", val)
+			// Convert to string and use setRecordProperty for mapping
+			valStr := fmt.Sprintf("%v", val)
+			setRecordProperty(record, key, valStr)
 		}
 	}
 	

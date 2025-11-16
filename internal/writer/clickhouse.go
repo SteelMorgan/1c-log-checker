@@ -10,6 +10,21 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// ClickHouse DateTime64 valid range: 1925-01-01 to 2283-11-11
+var (
+	minClickHouseDateTime = time.Date(1925, 1, 1, 0, 0, 0, 0, time.UTC)
+	maxClickHouseDateTime = time.Date(2283, 11, 11, 23, 59, 59, 999999999, time.UTC)
+)
+
+// ensureValidDateTime ensures the time value is within ClickHouse DateTime64 range
+// Returns the input time if valid, or minClickHouseDateTime if out of range or zero
+func ensureValidDateTime(t time.Time) time.Time {
+	if t.IsZero() || t.Before(minClickHouseDateTime) || t.After(maxClickHouseDateTime) {
+		return minClickHouseDateTime
+	}
+	return t
+}
+
 // ClickHouseWriter writes records to ClickHouse in batches
 type ClickHouseWriter struct {
 	conn clickhouse.Conn
@@ -60,13 +75,25 @@ func (w *ClickHouseWriter) WriteEventLog(ctx context.Context, record *domain.Eve
 
 // WriteTechLog adds a tech log record to the batch
 func (w *ClickHouseWriter) WriteTechLog(ctx context.Context, record *domain.TechLogRecord) error {
-	w.techLogBatch = append(w.techLogBatch, record)
-	
+	// CRITICAL: Make a copy of the record to avoid race conditions
+	recordCopy := *record
+
+	w.techLogBatch = append(w.techLogBatch, &recordCopy)
+	batchSize := len(w.techLogBatch)
+
 	// Check if batch is full or timeout reached
-	if len(w.techLogBatch) >= w.cfg.MaxSize || time.Since(w.lastFlush).Milliseconds() >= w.cfg.FlushTimeout {
-		return w.flushTechLog(ctx)
+	if batchSize >= w.cfg.MaxSize || time.Since(w.lastFlush).Milliseconds() >= w.cfg.FlushTimeout {
+		// CRITICAL: Create a snapshot of the batch to avoid modification during flush
+		batchSnapshot := make([]*domain.TechLogRecord, batchSize)
+		copy(batchSnapshot, w.techLogBatch)
+
+		// Clear the original batch before flushing to prevent new records from being added
+		w.techLogBatch = w.techLogBatch[:0]
+
+		// Flush the snapshot
+		return w.flushTechLogSnapshot(ctx, batchSnapshot)
 	}
-	
+
 	return nil
 }
 
@@ -76,6 +103,43 @@ func (w *ClickHouseWriter) Flush(ctx context.Context) error {
 		return err
 	}
 	return w.flushTechLog(ctx)
+}
+
+// WriteParserMetrics writes parser performance metrics to ClickHouse
+func (w *ClickHouseWriter) WriteParserMetrics(ctx context.Context, metrics *domain.ParserMetrics) error {
+	batch, err := w.conn.PrepareBatch(ctx, "INSERT INTO logs.parser_metrics")
+	if err != nil {
+		return fmt.Errorf("failed to prepare batch: %w", err)
+	}
+	
+	err = batch.Append(
+		metrics.Timestamp,
+		metrics.ParserType,
+		metrics.ClusterGUID,
+		metrics.InfobaseGUID,
+		metrics.FilesProcessed,
+		metrics.RecordsParsed,
+		metrics.ParsingTimeMs,
+		metrics.RecordsPerSecond,
+		metrics.StartTime,
+		metrics.EndTime,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to append to batch: %w", err)
+	}
+	
+	if err := batch.Send(); err != nil {
+		return fmt.Errorf("failed to send batch: %w", err)
+	}
+	
+	log.Debug().
+		Str("parser_type", metrics.ParserType).
+		Uint32("files_processed", metrics.FilesProcessed).
+		Uint64("records_parsed", metrics.RecordsParsed).
+		Float64("records_per_second", metrics.RecordsPerSecond).
+		Msg("Parser metrics written to ClickHouse")
+	
+	return nil
 }
 
 // Close flushes and closes the writer
@@ -375,12 +439,28 @@ func (w *ClickHouseWriter) flushTechLog(ctx context.Context) error {
 	if len(w.techLogBatch) == 0 {
 		return nil
 	}
-	
+
+	// CRITICAL: Create a snapshot to avoid modification during processing
+	batchSnapshot := make([]*domain.TechLogRecord, len(w.techLogBatch))
+	copy(batchSnapshot, w.techLogBatch)
+
+	// Clear the original batch
+	w.techLogBatch = w.techLogBatch[:0]
+
+	return w.flushTechLogSnapshot(ctx, batchSnapshot)
+}
+
+// flushTechLogSnapshot processes a snapshot of the batch (thread-safe)
+func (w *ClickHouseWriter) flushTechLogSnapshot(ctx context.Context, batchSnapshot []*domain.TechLogRecord) error {
+	if len(batchSnapshot) == 0 {
+		return nil
+	}
+
 	// Calculate hashes and filter duplicates (if enabled)
-	recordsToWrite := make([]*domain.TechLogRecord, 0, len(w.techLogBatch))
-	hashes := make([]string, 0, len(w.techLogBatch))
-	
-	for _, record := range w.techLogBatch {
+	recordsToWrite := make([]*domain.TechLogRecord, 0, len(batchSnapshot))
+	hashes := make([]string, 0, len(batchSnapshot))
+
+	for _, record := range batchSnapshot {
 		hash, err := calculateTechLogHash(record)
 		if err != nil {
 			log.Warn().Err(err).Msg("Failed to calculate hash, skipping record")
@@ -405,9 +485,8 @@ func (w *ClickHouseWriter) flushTechLog(ctx context.Context) error {
 	
 	if len(recordsToWrite) == 0 {
 		if w.cfg.EnableDeduplication {
-			log.Debug().Int("total", len(w.techLogBatch)).Msg("All tech log records were duplicates, skipping batch")
+			log.Debug().Int("total", len(batchSnapshot)).Msg("All tech log records were duplicates, skipping batch")
 		}
-		w.techLogBatch = w.techLogBatch[:0]
 		return nil
 	}
 	
@@ -420,6 +499,7 @@ func (w *ClickHouseWriter) flushTechLog(ctx context.Context) error {
 		propKeys, propVals := mapToArrays(record.Properties)
 		
 		err := batch.Append(
+			// Core fields
 			record.Timestamp,
 			record.Duration,
 			record.Name,
@@ -439,6 +519,284 @@ func (w *ClickHouseWriter) flushTechLog(ctx context.Context) error {
 			record.ClusterGUID,
 			record.InfobaseGUID,
 			record.RawLine,
+			// SQL event properties (DBMSSQL, DBPOSTGRS, DBORACLE, DB2, DBV8DBENG, DBDA, EDS)
+			record.SQL,
+			record.PlanSQLText,
+			record.Rows,
+			record.RowsAffected,
+			record.DBMS,
+			record.Database,
+			record.Dbpid,
+			record.DBCopy,
+			record.NParams,
+			record.MDX,
+			record.DBConnID,
+			record.DBConnStr,
+			record.DBUsr,
+			// SDBL query properties
+			record.Query,
+			record.Sdbl,
+			record.QueryFields,
+			// Exception properties (EXCP, EXCPCNTX)
+			record.Exception,
+			record.ExceptionDescr,
+			record.ExceptionContext,
+			record.Func,
+			record.Line,
+			record.File,
+			record.Module,
+			record.OSException,
+			// Lock properties (TLOCK, TTIMEOUT, TDEADLOCK)
+			record.Locks,
+			record.Regions,
+			record.WaitConnections,
+			record.Lka,
+			record.Lkp,
+			record.Lkpid,
+			record.Lkaid,
+			record.Lksrc,
+			record.Lkpto,
+			record.Lkato,
+			record.DeadlockConnectionIntersections,
+			// Connection properties (CONN)
+			record.Server,
+			record.Port,
+			record.SyncPort,
+			record.Connection,
+			record.HResultOLEDB,
+			record.HResultNC2005,
+			record.HResultNC2008,
+			record.HResultNC2012,
+			// Session properties (SESN)
+			record.SessionNmb,
+			record.SeanceID,
+			// Process properties (PROC)
+			record.ProcID,
+			record.PID,
+			record.ProcessName,
+			record.PProcessName,
+			record.SrcProcessName,
+			record.Finish,
+			record.ExitCode,
+			record.RunAs,
+			// Call properties (CALL, SCALL)
+			record.MName,
+			record.IName,
+			record.DstClientID,
+			record.RetExcp,
+			record.Memory,
+			record.MemoryPeak,
+			// Cluster properties (CLSTR)
+			record.ClusterEvent,
+			record.Cluster,
+			record.IB,
+			record.Ref,
+			record.Connections,
+			record.ConnLimit,
+			record.Infobases,
+			record.IBLimit,
+			record.DstAddr,
+			record.DstId,
+			record.DstPid,
+			record.DstSrv,
+			record.SrcAddr,
+			record.SrcId,
+			record.SrcPid,
+			record.SrcSrv,
+			record.SrcURL,
+			record.MyVer,
+			record.SrcVer,
+			record.Registered,
+			record.Obsolete,
+			record.Released,
+			record.Reason,
+			record.Request,
+			record.ServiceName,
+			record.ApplicationExt,
+			record.NeedResync,
+			record.NewServiceDataDirectory,
+			record.OldServiceDataDirectory,
+			// Server context properties (SCOM)
+			record.ServerComputerName,
+			record.ProcURL,
+			record.AgentURL,
+			// Admin properties (ADMIN)
+			record.Admin,
+			record.Action,
+			// Memory properties (MEM, LEAKS, ATTN)
+			record.Sz,
+			record.Szd,
+			record.Cn,
+			record.Cnd,
+			record.MemoryLimits,
+			record.ExcessDurationSec,
+			ensureValidDateTime(record.ExcessStartTime),
+			record.FreeMemory,
+			record.TotalMemory,
+			record.SafeLimit,
+			record.AttnInfo,
+			record.AttnPID,
+			record.AttnProcessID,
+			record.AttnServerID,
+			record.AttnURL,
+			// License properties (LIC, HASP)
+			record.LicRes,
+			record.HaspID,
+			// Full-text search properties (FTEXTUPD, FTS, FTEXTCHECK, INPUTBYSTRING)
+			record.FtextState,
+			record.AvMem,
+			record.BackgroundJobCreated,
+			record.MemoryUsed,
+			record.FailedJobsCount,
+			record.TotalJobsCount,
+			record.JobCanceledByLoadLimit,
+			record.MinDataID,
+			record.FtextFiles,
+			record.FtextFilesCount,
+			record.FtextFilesTotalSize,
+			record.FtextFolder,
+			record.FtextTime,
+			record.FtextFile,
+			record.FtextInfo,
+			record.FtextResult,
+			record.FtextSeparation,
+			record.FtextSepID,
+			record.FtextWord,
+			record.FindByString,
+			record.InputText,
+			record.FindTicks,
+			record.FtextTicks,
+			record.FtextSearchCount,
+			record.FtextResultCount,
+			record.SearchByMask,
+			record.TooManyResults,
+			record.FillRefsPresent,
+			record.FtsJobID,
+			record.FtsLogFrom,
+			record.FtsLogTo,
+			record.FtsFixedState,
+			record.FtsRecordCount,
+			record.FtsTotalRecords,
+			record.FtsTableCount,
+			record.FtsTableName,
+			record.FtsTableCode,
+			record.FtsTableRef,
+			record.FtsMetadataID,
+			record.FtsRecordRef,
+			record.FtsFullKey,
+			record.FtsReindexCount,
+			record.FtsSkippedRecords,
+			record.FtsParallelism,
+			// Storage properties (STORE)
+			record.StoreID,
+			record.StoreSize,
+			record.StorageGUID,
+			record.BackupFileName,
+			record.BackupBaseFileName,
+			record.BackupType,
+			record.MinimalWriteSize,
+			record.ReadOnlyMode,
+			record.UseMode,
+			// Garbage collector properties (SDGC)
+			record.SDGCInstanceID,
+			record.SDGCMethod,
+			record.SDGCFilesSize,
+			record.SDGCUsedSize,
+			record.SDGCCopyBytes,
+			record.SDGCLockDuration,
+			// Add-in properties (ADDIN)
+			record.AddinClasses,
+			record.AddinLocation,
+			record.AddinMethodName,
+			record.AddinMessage,
+			record.AddinSource,
+			record.AddinType,
+			record.AddinResult,
+			record.AddinCrashed,
+			record.AddinErrorDescr,
+			// System event properties (SYSTEM)
+			record.SystemClass,
+			record.SystemComponent,
+			record.SystemFile,
+			record.SystemLine,
+			record.SystemTxt,
+			// Event log properties (EVENTLOG)
+			record.EventlogFileName,
+			record.EventlogCPUTime,
+			record.EventlogOSThread,
+			record.EventlogPacketCount,
+			// Video properties (VIDEOCALL, VIDEOCONN, VIDEOSTATS)
+			record.VideoConnection,
+			record.VideoStatus,
+			record.VideoStreamType,
+			record.VideoValue,
+			record.VideoCPU,
+			record.VideoQueueLength,
+			record.VideoInMessage,
+			record.VideoOutMessage,
+			record.VideoDirection,
+			record.VideoType,
+			// Speech recognition properties (STT, STTAdm)
+			record.SttID,
+			record.SttKey,
+			record.SttModelID,
+			record.SttPath,
+			record.SttAudioEncoding,
+			record.SttFrames,
+			record.SttContexts,
+			record.SttContextsOnly,
+			record.SttRecording,
+			record.SttStatus,
+			record.SttPhrase,
+			record.SttRxAcoustic,
+			record.SttRxGrammar,
+			record.SttRxLanguage,
+			record.SttRxLocation,
+			record.SttRxSampleRate,
+			record.SttRxVersion,
+			record.SttTxAcoustic,
+			record.SttTxGrammar,
+			record.SttTxLanguage,
+			record.SttTxLocation,
+			record.SttTxSampleRate,
+			record.SttTxVersion,
+			// Web service properties (VRSREQUEST, VRSRESPONSE)
+			record.VrsURI,
+			record.VrsMethod,
+			record.VrsHeaders,
+			record.VrsBody,
+			record.VrsStatus,
+			record.VrsPhrase,
+			// Integration properties (SINTEG, EDS)
+			record.SintegSrvcName,
+			record.SintegExtSrvcURL,
+			record.SintegExtSrvcUsr,
+			// Mail properties (MAILPARSEERR)
+			record.MailMessageUID,
+			record.MailMethod,
+			// Certificate properties (WINCERT)
+			record.WinCertCertificate,
+			record.WinCertErrorCode,
+			// Data history properties (DHIST)
+			record.DhistDescription,
+			// Config load properties (CONFLOADFROMFILES)
+			record.ConfLoadAction,
+			// Background job properties
+			record.Report,
+			// Client properties (t: prefix)
+			record.TApplicationName,
+			record.TClientID,
+			record.TComputerName,
+			record.TConnectID,
+			// Additional properties
+			record.Host,
+			record.Val,
+			record.Err,
+			record.Calls,
+			record.InBytes,
+			record.OutBytes,
+			record.DurationUs,
+			// Dynamic properties
 			propKeys,
 			propVals,
 			hashes[i], // record_hash
@@ -453,16 +811,15 @@ func (w *ClickHouseWriter) flushTechLog(ctx context.Context) error {
 	}
 	
 	logEntry := log.Info().
-		Int("total", len(w.techLogBatch)).
+		Int("total", len(batchSnapshot)).
 		Int("written", len(recordsToWrite))
 	if w.cfg.EnableDeduplication {
-		logEntry = logEntry.Int("duplicates", len(w.techLogBatch)-len(recordsToWrite))
+		logEntry = logEntry.Int("duplicates", len(batchSnapshot)-len(recordsToWrite))
 	}
 	logEntry.Msg("Flushed tech log batch to ClickHouse")
-	
-	w.techLogBatch = w.techLogBatch[:0]
+
 	w.lastFlush = time.Now()
-	
+
 	return nil
 }
 

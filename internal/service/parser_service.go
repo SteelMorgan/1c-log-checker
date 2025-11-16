@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -345,15 +346,67 @@ func (s *ParserService) createDirectReader(location logreader.LogLocation, clust
 func (s *ParserService) runTechLogTailer(ctx context.Context, dir string) {
 	log.Info().Str("dir", dir).Msg("Starting tech log tailer")
 	
-	// Detect format (check for .json files or default to text)
-	isJSON := false // TODO: Auto-detect from files
+	// Extract cluster_guid and infobase_guid from directory path
+	clusterGUID, infobaseGUID, err := techlog.ExtractGUIDsFromPath(dir)
+	if err != nil {
+		log.Warn().
+			Err(err).
+			Str("dir", dir).
+			Msg("Failed to extract GUIDs from path, metrics will have empty GUIDs")
+		clusterGUID = ""
+		infobaseGUID = ""
+	}
 	
-	tailer := techlog.NewTailer(dir, isJSON)
+	// Auto-detect format: try logcfg.xml first, then fallback to first log file
+	format, err := techlog.DetectFormatFromDirectory(dir, s.cfg.TechLogConfigDir)
+	if err != nil {
+		log.Warn().
+			Err(err).
+			Str("dir", dir).
+			Msg("Failed to detect format, defaulting to text")
+		format = "text"
+	}
 	
+	isJSON := format == "json"
+	log.Info().
+		Str("dir", dir).
+		Str("format", format).
+		Bool("isJSON", isJSON).
+		Msg("Detected tech log format")
+	
+	// Metrics tracking
+	startTime := time.Now()
+	var recordsParsed uint64 = 0
+	var filesProcessed uint32 = 0
+	
+	// Track files processed (will be updated by tailer)
+	// Note: We can't easily track files from handler, so we'll use a simple approach:
+	// Count files at start and assume all are processed
+	allFiles, err := filepath.Glob(filepath.Join(dir, "*.log"))
+	if err == nil {
+		filesProcessed = uint32(len(allFiles))
+	}
+	
+	tailer := techlog.NewTailer(dir, isJSON, s.offsetStore)
+
+	// Set callback to flush pending batches after historical files processing completes
+	tailer.SetHistoricalCompleteCallback(func() {
+		if s.writer != nil {
+			if err := s.writer.Flush(ctx); err != nil {
+				log.Error().Err(err).Msg("Failed to flush tech log batches after historical processing")
+			} else {
+				log.Info().Msg("Flushed pending tech log batches after historical processing")
+			}
+		}
+	})
+
 	handler := func(record *domain.TechLogRecord) error {
-		// Enrich with cluster/infobase info (TODO: extract from path or config)
-		// For now, leave empty
-		
+		// Note: cluster_guid and infobase_guid are already extracted from path in tailer.go
+		// and added to record before calling this handler
+
+		// Increment records counter
+		recordsParsed++
+
 		// Write to ClickHouse
 		if s.writer != nil {
 			if err := s.writer.WriteTechLog(ctx, record); err != nil {
@@ -361,12 +414,88 @@ func (s *ParserService) runTechLogTailer(ctx context.Context, dir string) {
 				return err
 			}
 		}
-		
+
 		return nil
 	}
 	
-	if err := tailer.Start(ctx, handler); err != nil {
+	// Start tailer in goroutine to allow metrics collection
+	done := make(chan error, 1)
+	go func() {
+		done <- tailer.Start(ctx, handler)
+	}()
+	
+	// Periodically write metrics (every 5 minutes)
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	
+	// Write metrics on exit
+	defer func() {
+		endTime := time.Now()
+		totalTime := endTime.Sub(startTime)
+		recordsPerSec := float64(recordsParsed) / totalTime.Seconds()
+		
+		metrics := &domain.ParserMetrics{
+			Timestamp:        time.Now(),
+			ParserType:        "tech_log",
+			ClusterGUID:       clusterGUID,
+			InfobaseGUID:      infobaseGUID,
+			FilesProcessed:    filesProcessed,
+			RecordsParsed:      recordsParsed,
+			ParsingTimeMs:     uint64(totalTime.Milliseconds()),
+			RecordsPerSecond:   recordsPerSec,
+			StartTime:         startTime,
+			EndTime:           endTime,
+		}
+		
+		if !s.cfg.ReadOnly && s.writer != nil {
+			if err := s.writer.WriteParserMetrics(ctx, metrics); err != nil {
+				log.Error().Err(err).Msg("Failed to write parser metrics")
+			}
+		}
+		
+		log.Info().
+			Uint32("files", filesProcessed).
+			Uint64("records", recordsParsed).
+			Dur("time", totalTime).
+			Float64("records_per_sec", recordsPerSec).
+			Msg("Tech log parsing metrics")
+	}()
+	
+	// Wait for tailer or ticker
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case err := <-done:
+			if err != nil {
 		log.Error().Err(err).Str("dir", dir).Msg("Tech log tailer error")
+			}
+			return
+		case <-ticker.C:
+			// Write periodic metrics
+			currentTime := time.Now()
+			elapsed := currentTime.Sub(startTime)
+			recordsPerSec := float64(recordsParsed) / elapsed.Seconds()
+			
+			metrics := &domain.ParserMetrics{
+				Timestamp:        time.Now(),
+				ParserType:        "tech_log",
+				ClusterGUID:       clusterGUID,
+				InfobaseGUID:      infobaseGUID,
+				FilesProcessed:    filesProcessed,
+				RecordsParsed:      recordsParsed,
+				ParsingTimeMs:     uint64(elapsed.Milliseconds()),
+				RecordsPerSecond:   recordsPerSec,
+				StartTime:         startTime,
+				EndTime:           currentTime,
+			}
+			
+			if !s.cfg.ReadOnly && s.writer != nil {
+				if err := s.writer.WriteParserMetrics(ctx, metrics); err != nil {
+					log.Error().Err(err).Msg("Failed to write periodic parser metrics")
+				}
+			}
+		}
 	}
 }
 
