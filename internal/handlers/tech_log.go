@@ -16,6 +16,26 @@ type TechLogHandler struct {
 	clusterMap *mapping.ClusterMap
 }
 
+// TechLogMinimal represents minimal tech log record
+type TechLogMinimal struct {
+	Ts            time.Time `json:"ts"`
+	Name          string    `json:"name"`
+	Level         string    `json:"level"`
+	Duration      uint64    `json:"duration"`
+	Process       string    `json:"process"`
+	Usr           string    `json:"usr"`
+	SessionID     string    `json:"session_id"`
+	TransactionID string    `json:"transaction_id"`
+	PropertyKey   []string  `json:"property_key"`
+	PropertyValue []string  `json:"property_value"`
+}
+
+// TechLogFull represents full tech log record with raw_line
+type TechLogFull struct {
+	TechLogMinimal
+	RawLine string `json:"raw_line"`
+}
+
 // NewTechLogHandler creates a new tech log handler
 func NewTechLogHandler(ch *clickhouse.Client, clusterMap *mapping.ClusterMap) *TechLogHandler {
 	return &TechLogHandler{
@@ -52,34 +72,24 @@ func (h *TechLogHandler) GetTechLog(ctx context.Context, params TechLogParams) (
 		params.Limit = 1000
 	}
 
-	// Build query
-	var query string
-	if params.Mode == "minimal" {
-		query = `
-			SELECT 
-				ts,
-				name,
-				level,
-				duration,
-				process,
-				usr,
-				session_id,
-				transaction_id,
-				property_key,
-				property_value
-			FROM logs.tech_log
-			WHERE cluster_guid = ? AND infobase_guid = ?
-			  AND ts BETWEEN ? AND ?
-		`
-	} else {
-		// Full mode: all fields including raw_line
-		query = `
-			SELECT *
-			FROM logs.tech_log
-			WHERE cluster_guid = ? AND infobase_guid = ?
-			  AND ts BETWEEN ? AND ?
-		`
-	}
+	// Build query - always select specific columns (ClickHouse Go driver doesn't support MapScan)
+	query := `
+		SELECT
+			ts,
+			name,
+			level,
+			duration,
+			process,
+			usr,
+			session_id,
+			transaction_id,
+			property_key,
+			property_value,
+			raw_line
+		FROM logs.tech_log
+		WHERE cluster_guid = ? AND infobase_guid = ?
+		  AND ts BETWEEN ? AND ?
+	`
 	
 	// Add event name filter if specified
 	if params.Name != "" {
@@ -106,27 +116,76 @@ func (h *TechLogHandler) GetTechLog(ctx context.Context, params TechLogParams) (
 		return "", fmt.Errorf("query failed: %w", err)
 	}
 	defer rows.Close()
-	
-	// Collect results
-	var results []map[string]interface{}
-	for rows.Next() {
-		var record map[string]interface{}
-		if err := rows.ScanStruct(&record); err != nil {
-			return "", fmt.Errorf("scan failed: %w", err)
+
+	var jsonData []byte
+
+	// Collect results based on mode
+	if params.Mode == "minimal" {
+		var results []TechLogMinimal
+		for rows.Next() {
+			var record TechLogMinimal
+			var rawLine string // Read but discard for minimal mode
+			if err := rows.Scan(
+				&record.Ts,
+				&record.Name,
+				&record.Level,
+				&record.Duration,
+				&record.Process,
+				&record.Usr,
+				&record.SessionID,
+				&record.TransactionID,
+				&record.PropertyKey,
+				&record.PropertyValue,
+				&rawLine,
+			); err != nil {
+				return "", fmt.Errorf("scan failed: %w", err)
+			}
+			results = append(results, record)
 		}
-		results = append(results, record)
+
+		if err := rows.Err(); err != nil {
+			return "", fmt.Errorf("rows error: %w", err)
+		}
+
+		// Convert to JSON
+		jsonData, err = json.MarshalIndent(results, "", "  ")
+		if err != nil {
+			return "", fmt.Errorf("json marshal failed: %w", err)
+		}
+	} else {
+		// Full mode: Include raw_line
+		var results []TechLogFull
+		for rows.Next() {
+			var record TechLogFull
+			if err := rows.Scan(
+				&record.Ts,
+				&record.Name,
+				&record.Level,
+				&record.Duration,
+				&record.Process,
+				&record.Usr,
+				&record.SessionID,
+				&record.TransactionID,
+				&record.PropertyKey,
+				&record.PropertyValue,
+				&record.RawLine,
+			); err != nil {
+				return "", fmt.Errorf("scan failed: %w", err)
+			}
+			results = append(results, record)
+		}
+
+		if err := rows.Err(); err != nil {
+			return "", fmt.Errorf("rows error: %w", err)
+		}
+
+		// Convert to JSON
+		jsonData, err = json.MarshalIndent(results, "", "  ")
+		if err != nil {
+			return "", fmt.Errorf("json marshal failed: %w", err)
+		}
 	}
-	
-	if err := rows.Err(); err != nil {
-		return "", fmt.Errorf("rows error: %w", err)
-	}
-	
-	// Convert to JSON
-	jsonData, err := json.MarshalIndent(results, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("json marshal failed: %w", err)
-	}
-	
+
 	return string(jsonData), nil
 }
 
