@@ -109,11 +109,41 @@
 }
 ```
 
-#### 1.5. get_new_errors ⚠️
-**Статус:** NOT IMPLEMENTED
-**Результат:** `{"error":"not implemented yet"}`
+#### 1.5. get_new_errors_aggregated ✅
+**Статус:** PASS (renamed from get_new_errors)
+**Запрос:**
+```json
+{
+  "cluster_guid": "b0881663-f2a7-4195-b7a2-f7f8e6c3a8f3",
+  "infobase_guid": "d723aefd-7992-420d-b5f9-a273fd4146be",
+  "hours": 48,
+  "limit": 10
+}
+```
 
-**Примечание:** Требуется реализация
+**Результат:**
+- ✅ Вернул агрегированные ошибки из mv_new_errors
+- ✅ Поля: cluster_guid, infobase_guid, event_name, error_text, error_signature
+- ✅ Статистика: occurrences, first_seen, last_seen
+- ✅ Sample logs: массив примеров (до 10 строк)
+- ✅ Дедупликация по error_signature (sipHash64)
+
+**Пример ответа:**
+```json
+{
+  "cluster_guid": "b0881663-f2a7-4195-b7a2-f7f8e6c3a8f3",
+  "cluster_name": "Local cluster",
+  "infobase_guid": "d723aefd-7992-420d-b5f9-a273fd4146be",
+  "infobase_name": "GBIG PAM",
+  "event_name": "PROC",
+  "error_text": "",
+  "error_signature": 11169966658121521896,
+  "occurrences": 100,
+  "first_seen": "2025-11-16T17:15:54.837001Z",
+  "last_seen": "2025-11-16T17:17:41.064Z",
+  "sample_lines": ["...", "..."]
+}
+```
 
 #### 1.6. disable_techlog
 **Статус:** SKIPPED (не тестировалось, чтобы не отключить техлог)
@@ -193,7 +223,7 @@ SELECT COUNT(*) FROM logs.tech_log
 | Компонент | Статус | Детали |
 |-----------|--------|--------|
 | Docker Environment | ✅ PASS | Все сервисы запущены и healthy |
-| MCP Server | ✅ PASS | 5/6 tools работают (1 not implemented) |
+| MCP Server | ✅ PASS | 6/6 tools работают |
 | Event Log Parser | ✅ PASS | 5123 записи успешно спарсены |
 | Tech Log Parser | ✅ PASS | 1693 записи успешно спарсены |
 | Parser Metrics | ✅ PASS | 75 записей метрик, периодическая запись работает |
@@ -209,9 +239,9 @@ SELECT COUNT(*) FROM logs.tech_log
 Нет критичных проблем
 
 ### Некритичные
-1. ⚠️ **get_new_errors** не реализован
-   - **Приоритет:** Средний
-   - **Решение:** Требуется реализация handler
+1. ✅ **get_new_errors_aggregated** реализован (переименован из get_new_errors)
+   - **Статус:** Завершено
+   - **Детали:** Добавлен параметр hours, реализован запрос к mv_new_errors
 
 ### Улучшения
 1. 📝 Tech log parser не заполняет `cluster_name` и `infobase_name` в метриках
@@ -242,7 +272,7 @@ SELECT COUNT(*) FROM logs.tech_log
 ## 🎯 Следующие шаги
 
 ### Обязательно
-1. Реализовать `get_new_errors` handler
+1. ✅ ~~Реализовать `get_new_errors_aggregated` handler~~ (Завершено)
 2. Добавить периодические метрики для event log parser
 3. Создать Grafana dashboards (Top Errors, Tech Log)
 
@@ -261,7 +291,7 @@ SELECT COUNT(*) FROM logs.tech_log
 - `scripts/test_configure_techlog.json` - конфигурация техлога
 - `scripts/test_get_event_log.json` - запрос event log
 - `scripts/test_get_tech_log.json` - запрос tech log
-- `scripts/test_get_new_errors.json` - запрос новых ошибок
+- `scripts/test_get_new_errors.json` - запрос агрегированных ошибок (get_new_errors_aggregated)
 
 ---
 
