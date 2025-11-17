@@ -76,6 +76,7 @@ services:
       MCP_PORT: ${MCP_PORT:-8080}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       TECHLOG_CONFIG_DIR: /app/techlog-config
+      TECHLOG_DIRS: ${TECHLOG_DIRS:-C:\ProgramData\1C\1Cv8\logs}
     networks:
       - internal
       - monitoring

@@ -195,6 +195,50 @@
         },
         "required": ["config_path"]
       }
+    },
+    {
+      "name": "save_techlog",
+      "description": "Save current technical log configuration as backup (logcfg.xml.OLD).\n\nIMPORTANT: Always save current configuration before making changes to enable restoration later.\n\nThis tool:\n- Reads current logcfg.xml file\n- Creates backup file logcfg.xml.OLD\n- Overwrites existing .OLD file if present\n\nUse this before:\n- Creating new configuration with configure_techlog\n- Making any changes to techlog settings\n\nExample workflow:\n1. Call: save_techlog(config_path='configs/techlog/logcfg.xml')\n2. If successful → proceed with configure_techlog\n3. If file not found → remember 'no config' state\n4. Later → use restore_techlog to restore backup",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "config_path": {
+            "type": "string",
+            "description": "Full path to logcfg.xml file. If not provided, uses default path from server configuration.",
+            "default": ""
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "restore_techlog",
+      "description": "Restore technical log configuration from backup (logcfg.xml.OLD).\n\nIMPORTANT: Use this to restore previous configuration after investigation is complete.\n\nThis tool:\n- Checks for logcfg.xml.OLD backup file\n- Removes current logcfg.xml (if exists)\n- Renames .OLD file back to .xml\n\nUse this after:\n- Completing techlog investigation\n- When you need to restore original settings\n\nExample workflow:\n1. After investigation complete\n2. Call: restore_techlog(config_path='configs/techlog/logcfg.xml')\n3. Original configuration restored\n\nIf backup not found → returns error (nothing to restore)",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "config_path": {
+            "type": "string",
+            "description": "Full path to logcfg.xml file. If not provided, uses default path from server configuration.",
+            "default": ""
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "get_actual_log_timestamp",
+      "description": "Get maximum timestamp (latest processed record) from tech_log table for specified infobase.\n\nIMPORTANT: Use this for smart polling to check if logs are ready before querying.\n\nThis tool:\n- Queries ClickHouse: SELECT MAX(ts) FROM logs.tech_log WHERE infobase_guid = ?\n- Returns latest timestamp that has been processed and indexed\n- Useful for determining if logs for target timeframe are ready\n\nUse cases:\n- Smart polling: Check if parser processed logs up to target time\n- Determine time window: Get latest available timestamp before querying\n- Parser readiness: Verify logs are ready before get_tech_log call\n\nExample workflow (smart polling):\n1. Target time = when test/event occurred\n2. Loop: call get_actual_log_timestamp(base_id='...')\n3. If max_timestamp >= target_time → logs ready, proceed to get_tech_log\n4. If max_timestamp < target_time → wait 5 seconds, retry (max 10 iterations)\n\nResponse format:\n{\n  \"base_id\": \"d723aefd-7992-420d-b5f9-a273fd4146be\",\n  \"max_timestamp\": \"2025-11-15T14:23:45.123456Z\",\n  \"has_data\": true\n}\n\nIf no data:\n{\n  \"base_id\": \"...\",\n  \"max_timestamp\": null,\n  \"has_data\": false\n}",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "base_id": {
+            "type": "string",
+            "description": "Infobase GUID (MUST be obtained from configs/cluster_map.yaml). Format: UUID (e.g., 'd723aefd-7992-420d-b5f9-a273fd4146be'). NEVER use placeholder values."
+          }
+        },
+        "required": ["base_id"]
+      }
     }
   ]
 }

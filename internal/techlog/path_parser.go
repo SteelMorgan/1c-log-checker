@@ -11,6 +11,15 @@ import (
 // Example: b0881663-f2a7-4195-b7a2-f7f8e6c3a8f3
 var guidRegex = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
+// isWindowsDriveLetter checks if a string is a Windows drive letter (e.g., "C:", "D:")
+func isWindowsDriveLetter(s string) bool {
+	if len(s) != 2 || s[1] != ':' {
+		return false
+	}
+	letter := s[0]
+	return (letter >= 'A' && letter <= 'Z') || (letter >= 'a' && letter <= 'z')
+}
+
 // ExtractGUIDsFromPath extracts cluster_guid and infobase_guid from techlog file path
 //
 // Expected path structure:
@@ -30,10 +39,10 @@ func ExtractGUIDsFromPath(filePath string) (clusterGUID, infobaseGUID string, er
 	// Split path into parts
 	parts := strings.Split(normalizedPath, "/")
 
-	// Remove empty parts (from leading/trailing slashes)
+	// Remove empty parts and Windows drive letters
 	var cleanParts []string
 	for _, part := range parts {
-		if part != "" {
+		if part != "" && !isWindowsDriveLetter(part) {
 			cleanParts = append(cleanParts, part)
 		}
 	}
@@ -99,7 +108,8 @@ func ValidateTechLogPath(path string, expectedClusterGUID, expectedInfobaseGUID 
 	if len(techLogDirs) > 0 {
 		// Validate against base directories
 		for _, base := range techLogDirs {
-			normalizedBase := filepath.ToSlash(base)
+			// Normalize backslashes to forward slashes (works for Windows paths on Linux)
+			normalizedBase := strings.ReplaceAll(base, "\\", "/")
 			normalizedBase = strings.TrimSuffix(normalizedBase, "/")
 			if strings.HasPrefix(normalizedPath, normalizedBase) {
 				baseDir = normalizedBase
@@ -111,7 +121,7 @@ func ValidateTechLogPath(path string, expectedClusterGUID, expectedInfobaseGUID 
 		if !found {
 			// Path doesn't start with any base directory
 			// Generate correct path suggestion
-			correctPath := filepath.ToSlash(techLogDirs[0])
+			correctPath := strings.ReplaceAll(techLogDirs[0], "\\", "/")
 			correctPath = strings.TrimSuffix(correctPath, "/")
 			correctPath = fmt.Sprintf("%s/%s/%s", correctPath, expectedClusterGUID, expectedInfobaseGUID)
 			return fmt.Errorf(
@@ -129,9 +139,9 @@ func ValidateTechLogPath(path string, expectedClusterGUID, expectedInfobaseGUID 
 		// Split into parts
 		parts := strings.Split(relativePath, "/")
 
-		// Remove empty parts
+		// Remove empty parts and Windows drive letters
 		for _, part := range parts {
-			if part != "" {
+			if part != "" && !isWindowsDriveLetter(part) {
 				cleanParts = append(cleanParts, part)
 			}
 		}
@@ -151,9 +161,9 @@ func ValidateTechLogPath(path string, expectedClusterGUID, expectedInfobaseGUID 
 		// Split path into parts
 		parts := strings.Split(normalizedPath, "/")
 
-		// Remove empty parts
+		// Remove empty parts and Windows drive letters
 		for _, part := range parts {
-			if part != "" {
+			if part != "" && !isWindowsDriveLetter(part) {
 				cleanParts = append(cleanParts, part)
 			}
 		}
@@ -173,7 +183,7 @@ func ValidateTechLogPath(path string, expectedClusterGUID, expectedInfobaseGUID 
 		if baseDir != "" {
 			correctPath = fmt.Sprintf("%s/%s/%s", baseDir, expectedClusterGUID, expectedInfobaseGUID)
 		} else if len(techLogDirs) > 0 {
-			correctPath = fmt.Sprintf("%s/%s/%s", filepath.ToSlash(techLogDirs[0]), expectedClusterGUID, expectedInfobaseGUID)
+			correctPath = fmt.Sprintf("%s/%s/%s", strings.ReplaceAll(techLogDirs[0], "\\", "/"), expectedClusterGUID, expectedInfobaseGUID)
 		} else {
 			correctPath = fmt.Sprintf("<base_dir>/%s/%s", expectedClusterGUID, expectedInfobaseGUID)
 		}
@@ -194,7 +204,7 @@ func ValidateTechLogPath(path string, expectedClusterGUID, expectedInfobaseGUID 
 		if baseDir != "" {
 			correctPath = fmt.Sprintf("%s/%s/%s", baseDir, expectedClusterGUID, expectedInfobaseGUID)
 		} else if len(techLogDirs) > 0 {
-			correctPath = fmt.Sprintf("%s/%s/%s", filepath.ToSlash(techLogDirs[0]), expectedClusterGUID, expectedInfobaseGUID)
+			correctPath = fmt.Sprintf("%s/%s/%s", strings.ReplaceAll(techLogDirs[0], "\\", "/"), expectedClusterGUID, expectedInfobaseGUID)
 		} else {
 			correctPath = fmt.Sprintf("<base_dir>/%s/%s", expectedClusterGUID, expectedInfobaseGUID)
 		}

@@ -42,8 +42,8 @@ func (h *GetActualLogTimestampHandler) GetActualLogTimestamp(ctx context.Context
 	}
 	defer rows.Close()
 
-	// Read result
-	var maxTimestamp interface{}
+	// Read result - use nullable time.Time to handle NULL values
+	var maxTimestamp *time.Time
 	if rows.Next() {
 		if err := rows.Scan(&maxTimestamp); err != nil {
 			return "", fmt.Errorf("scan failed: %w", err)
@@ -65,29 +65,9 @@ func (h *GetActualLogTimestampHandler) GetActualLogTimestamp(ctx context.Context
 		response["max_timestamp"] = nil
 		response["has_data"] = false
 	} else {
-		// Convert to time.Time
-		var ts time.Time
-		switch v := maxTimestamp.(type) {
-		case time.Time:
-			ts = v
-		case *time.Time:
-			if v == nil {
-				response["max_timestamp"] = nil
-				response["has_data"] = false
-			} else {
-				ts = *v
-				response["max_timestamp"] = ts.Format(time.RFC3339Nano)
-				response["has_data"] = true
-			}
-		default:
-			return "", fmt.Errorf("unexpected timestamp type: %T", maxTimestamp)
-		}
-		
-		// Only set timestamp if we have a valid time.Time
-		if !ts.IsZero() {
-			response["max_timestamp"] = ts.Format(time.RFC3339Nano)
-			response["has_data"] = true
-		}
+		// Format timestamp
+		response["max_timestamp"] = maxTimestamp.Format(time.RFC3339Nano)
+		response["has_data"] = true
 	}
 
 	// Convert to JSON
