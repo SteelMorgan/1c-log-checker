@@ -116,13 +116,16 @@ func (w *ClickHouseWriter) WriteParserMetrics(ctx context.Context, metrics *doma
 		metrics.Timestamp,
 		metrics.ParserType,
 		metrics.ClusterGUID,
+		metrics.ClusterName,
 		metrics.InfobaseGUID,
+		metrics.InfobaseName,
 		metrics.FilesProcessed,
 		metrics.RecordsParsed,
 		metrics.ParsingTimeMs,
 		metrics.RecordsPerSecond,
 		metrics.StartTime,
 		metrics.EndTime,
+		metrics.ErrorCount,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to append to batch: %w", err)

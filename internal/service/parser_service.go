@@ -257,6 +257,28 @@ func (s *ParserService) runEventLogReader(ctx context.Context, location logreade
 						Int64("total_records_parsed", totalRecords).
 						Float64("records_per_second", recordsPerSec).
 						Msg("Parsing completed: All records processed and written to ClickHouse")
+
+					// Write performance metrics to ClickHouse
+					if !s.cfg.ReadOnly && s.writer != nil {
+						metrics := &domain.ParserMetrics{
+							Timestamp:        time.Now(),
+							ParserType:       "event_log",
+							ClusterGUID:      location.ClusterGUID,
+							ClusterName:      location.ClusterName,
+							InfobaseGUID:     location.InfobaseGUID,
+							InfobaseName:     location.InfobaseName,
+							FilesProcessed:   uint32(len(location.LgpFiles)),
+							RecordsParsed:    uint64(totalRecords),
+							ParsingTimeMs:    uint64(totalParsingTime.Milliseconds()),
+							RecordsPerSecond: recordsPerSec,
+							StartTime:        parsingStartTime,
+							EndTime:          time.Now(),
+							ErrorCount:       0,
+						}
+						if err := s.writer.WriteParserMetrics(ctx, metrics); err != nil {
+							log.Error().Err(err).Msg("Failed to write parser metrics")
+						}
+					}
 					return
 				}
 				// In live mode, wait a bit and continue
@@ -436,15 +458,18 @@ func (s *ParserService) runTechLogTailer(ctx context.Context, dir string) {
 		
 		metrics := &domain.ParserMetrics{
 			Timestamp:        time.Now(),
-			ParserType:        "tech_log",
-			ClusterGUID:       clusterGUID,
-			InfobaseGUID:      infobaseGUID,
-			FilesProcessed:    filesProcessed,
-			RecordsParsed:      recordsParsed,
-			ParsingTimeMs:     uint64(totalTime.Milliseconds()),
-			RecordsPerSecond:   recordsPerSec,
-			StartTime:         startTime,
-			EndTime:           endTime,
+			ParserType:       "tech_log",
+			ClusterGUID:      clusterGUID,
+			ClusterName:      "", // Not available from path
+			InfobaseGUID:     infobaseGUID,
+			InfobaseName:     "", // Not available from path
+			FilesProcessed:   filesProcessed,
+			RecordsParsed:    recordsParsed,
+			ParsingTimeMs:    uint64(totalTime.Milliseconds()),
+			RecordsPerSecond: recordsPerSec,
+			StartTime:        startTime,
+			EndTime:          endTime,
+			ErrorCount:       0,
 		}
 		
 		if !s.cfg.ReadOnly && s.writer != nil {
@@ -479,15 +504,18 @@ func (s *ParserService) runTechLogTailer(ctx context.Context, dir string) {
 			
 			metrics := &domain.ParserMetrics{
 				Timestamp:        time.Now(),
-				ParserType:        "tech_log",
-				ClusterGUID:       clusterGUID,
-				InfobaseGUID:      infobaseGUID,
-				FilesProcessed:    filesProcessed,
-				RecordsParsed:      recordsParsed,
-				ParsingTimeMs:     uint64(elapsed.Milliseconds()),
-				RecordsPerSecond:   recordsPerSec,
-				StartTime:         startTime,
-				EndTime:           currentTime,
+				ParserType:       "tech_log",
+				ClusterGUID:      clusterGUID,
+				ClusterName:      "", // Not available from path
+				InfobaseGUID:     infobaseGUID,
+				InfobaseName:     "", // Not available from path
+				FilesProcessed:   filesProcessed,
+				RecordsParsed:    recordsParsed,
+				ParsingTimeMs:    uint64(elapsed.Milliseconds()),
+				RecordsPerSecond: recordsPerSec,
+				StartTime:        startTime,
+				EndTime:          currentTime,
+				ErrorCount:       0,
 			}
 			
 			if !s.cfg.ReadOnly && s.writer != nil {
