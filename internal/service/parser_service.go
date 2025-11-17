@@ -339,7 +339,7 @@ func (s *ParserService) runEventLogReader(ctx context.Context, location logreade
 
 // createDirectReader creates a direct file parsing reader
 func (s *ParserService) createDirectReader(location logreader.LogLocation, clusterName, infobaseName string) (logreader.EventLogReader, error) {
-	return eventlog.NewReader(location.BasePath, location.ClusterGUID, location.InfobaseGUID, clusterName, infobaseName)
+	return eventlog.NewReader(location.BasePath, location.ClusterGUID, location.InfobaseGUID, clusterName, infobaseName, s.cfg.MaxWorkers)
 }
 
 // runTechLogTailer runs a tech log tailer for a directory

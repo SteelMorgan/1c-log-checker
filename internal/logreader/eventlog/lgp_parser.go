@@ -54,42 +54,57 @@ func NewLgpParser(clusterGUID, infobaseGUID, clusterName, infobaseName string, l
 
 // Parse reads and parses .lgp file
 func (p *LgpParser) Parse(r io.Reader) ([]*domain.EventLogRecord, error) {
-	scanner := bufio.NewScanner(r)
-	
-	var records []*domain.EventLogRecord
+	// Use buffered reader with 4MB buffer for better performance
+	reader := bufio.NewReaderSize(r, 4*1024*1024)
+
+	// Pre-allocate records slice with estimated capacity
+	records := make([]*domain.EventLogRecord, 0, 10000)
 	lineNum := 0
-	
+
 	// Read header
-	if !scanner.Scan() {
+	line, err := reader.ReadString('\n')
+	if err != nil && err != io.EOF {
+		return nil, fmt.Errorf("failed to read header: %w", err)
+	}
+	if line == "" {
 		return nil, fmt.Errorf("empty file")
 	}
-	header := strings.TrimSpace(scanner.Text())
+	header := strings.TrimSpace(line)
 	// Remove BOM (Byte Order Mark) if present
 	header = strings.TrimPrefix(header, "\ufeff")
 	if !strings.HasPrefix(header, "1CV8LOG") {
 		return nil, fmt.Errorf("invalid header: %s", header)
 	}
 	lineNum++
-	
+
 	// Read infobase GUID (if not already set)
-	if !scanner.Scan() {
-		return nil, fmt.Errorf("missing infobase GUID")
+	line, err = reader.ReadString('\n')
+	if err != nil && err != io.EOF {
+		return nil, fmt.Errorf("failed to read infobase GUID: %w", err)
 	}
-	guid := strings.TrimSpace(scanner.Text())
+	guid := strings.TrimSpace(line)
 	if p.infobaseGUID == "" {
 		p.infobaseGUID = guid
 	}
 	lineNum++
-	
+
 	// Read all records (records can span multiple lines)
 	// Based on C# BracketsListReader logic: track brace depth to find complete records
-	var currentRecord strings.Builder
+	// Pre-allocate builder with estimated record size (2KB per record)
+	currentRecord := strings.Builder{}
+	currentRecord.Grow(2048)
 	braceDepth := 0
 	inQuotes := false
 	escapeNext := false
-	
-	for scanner.Scan() {
-		line := scanner.Text() // Don't trim - preserve structure
+
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil && err != io.EOF {
+			return nil, fmt.Errorf("scanner error: %w", err)
+		}
+		if line == "" && err == io.EOF {
+			break
+		}
 		lineNum++
 		
 		// Trim leading whitespace for processing, but preserve structure
@@ -186,17 +201,18 @@ func (p *LgpParser) Parse(r io.Reader) ([]*domain.EventLogRecord, error) {
 		if braceDepth > 0 && currentRecord.Len() > 0 {
 			currentRecord.WriteRune('\n')
 		}
+
+		// Check if we reached EOF
+		if err == io.EOF {
+			break
+		}
 	}
-	
+
 	// Check if there's an incomplete record at the end
 	if braceDepth > 0 && currentRecord.Len() > 0 {
 		log.Warn().Int("line", lineNum).Str("record_preview", truncate(currentRecord.String(), 100)).Msg("Incomplete record at end of file, skipping")
 	}
-	
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scanner error: %w", err)
-	}
-	
+
 	log.Info().Int("records", len(records)).Msg("Parsed .lgp file")
 	return records, nil
 }
