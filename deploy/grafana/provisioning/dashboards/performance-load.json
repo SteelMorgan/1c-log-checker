@@ -1,0 +1,469 @@
+{
+  "title": "1C Performance & Load",
+  "uid": "1c-performance-load",
+  "version": 1,
+  "schemaVersion": 38,
+  "tags": ["1c", "performance", "load", "monitoring"],
+  "timezone": "browser",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "infobase",
+        "type": "query",
+        "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+        "query": "SELECT DISTINCT infobase_name FROM logs.event_log WHERE infobase_name != '' UNION ALL SELECT DISTINCT infobase_name FROM logs.tech_log WHERE infobase_name != '' ORDER BY infobase_name",
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": "$__all"
+        },
+        "includeAll": true,
+        "multi": true,
+        "allValue": null
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Active Sessions (Current)",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  uniq(session_id) AS active_sessions\nFROM logs.tech_log\nWHERE timestamp >= now() - INTERVAL 5 MINUTE\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\n  AND session_id != 0",
+          "format": 1
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"value": 0, "color": "green"},
+              {"value": 50, "color": "yellow"},
+              {"value": 100, "color": "orange"},
+              {"value": 200, "color": "red"}
+            ]
+          }
+        }
+      },
+      "options": {
+        "graphMode": "area",
+        "colorMode": "background"
+      }
+    },
+    {
+      "id": 2,
+      "title": "Requests Per Second (RPS)",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  count() / 60 AS rps\nFROM logs.event_log\nWHERE event_time >= now() - INTERVAL 1 MINUTE\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))",
+          "format": 1
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"value": 0, "color": "green"},
+              {"value": 100, "color": "yellow"},
+              {"value": 500, "color": "red"}
+            ]
+          }
+        }
+      },
+      "options": {
+        "graphMode": "area",
+        "colorMode": "value"
+      }
+    },
+    {
+      "id": 3,
+      "title": "Slow Queries (> 1s) - Last Hour",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  count() AS slow_queries\nFROM logs.tech_log\nWHERE timestamp >= now() - INTERVAL 1 HOUR\n  AND name IN ('DBMSSQL', 'SDBL')\n  AND duration_microseconds > 1000000\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))",
+          "format": 1
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"value": 0, "color": "green"},
+              {"value": 10, "color": "yellow"},
+              {"value": 50, "color": "red"}
+            ]
+          }
+        }
+      },
+      "options": {
+        "graphMode": "area",
+        "colorMode": "background"
+      }
+    },
+    {
+      "id": 4,
+      "title": "Deadlocks - Last Hour",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  count() AS deadlocks\nFROM logs.tech_log\nWHERE timestamp >= now() - INTERVAL 1 HOUR\n  AND name = 'TDEADLOCK'\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))",
+          "format": 1
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"value": 0, "color": "green"},
+              {"value": 1, "color": "yellow"},
+              {"value": 5, "color": "red"}
+            ]
+          }
+        }
+      },
+      "options": {
+        "graphMode": "area",
+        "colorMode": "background"
+      }
+    },
+    {
+      "id": 5,
+      "title": "Active Sessions Timeline",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(timestamp), 60) * 60) AS time,\n  uniq(session_id) AS sessions\nFROM logs.tech_log\nWHERE $__timeFilter(timestamp)\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\n  AND session_id != 0\nGROUP BY time\nORDER BY time",
+          "format": 0
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "fillOpacity": 20
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Request Rate Timeline",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(event_time), 60) * 60) AS time,\n  count() / 60 AS rps\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nGROUP BY time\nORDER BY time",
+          "format": 0
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "fillOpacity": 20
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "reqps"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Database Query Duration Percentiles",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 12},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(timestamp), 300) * 300) AS time,\n  quantile(0.50)(duration_microseconds) / 1000 AS \"P50 (ms)\",\n  quantile(0.95)(duration_microseconds) / 1000 AS \"P95 (ms)\",\n  quantile(0.99)(duration_microseconds) / 1000 AS \"P99 (ms)\",\n  max(duration_microseconds) / 1000 AS \"Max (ms)\"\nFROM logs.tech_log\nWHERE $__timeFilter(timestamp)\n  AND name IN ('DBMSSQL', 'SDBL')\n  AND duration_microseconds > 0\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nGROUP BY time\nORDER BY time",
+          "format": 0
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth"
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "ms"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "title": "Top 20 Slowest Queries",
+      "type": "table",
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 20},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  timestamp AS \"Дата, время\",\n  infobase_name AS \"Информационная база\",\n  name AS \"Тип\",\n  duration_microseconds / 1000 AS \"Длительность (мс)\",\n  sql_text AS \"SQL запрос\",\n  context AS \"Контекст\",\n  session_id AS \"ID сессии\",\n  server_computer_name AS \"Сервер\"\nFROM logs.tech_log\nWHERE $__timeFilter(timestamp)\n  AND name IN ('DBMSSQL', 'SDBL')\n  AND duration_microseconds > 0\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nORDER BY duration_microseconds DESC\nLIMIT 20",
+          "format": 1
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Длительность (мс)"
+          }
+        ]
+      },
+      "fieldConfig": {
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "Длительность (мс)"},
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 150
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {"value": 0, "color": "green"},
+                    {"value": 1000, "color": "yellow"},
+                    {"value": 5000, "color": "red"}
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "title": "Slow Transactions (> 5s)",
+      "type": "table",
+      "gridPos": {"h": 10, "w": 12, "x": 0, "y": 30},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  timestamp AS \"Дата, время\",\n  infobase_name AS \"Информационная база\",\n  duration_microseconds / 1000 AS \"Длительность (мс)\",\n  transaction_id AS \"ID транзакции\",\n  context AS \"Контекст\",\n  session_id AS \"Сессия\"\nFROM logs.tech_log\nWHERE $__timeFilter(timestamp)\n  AND name = 'TRAN'\n  AND duration_microseconds > 5000000\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nORDER BY duration_microseconds DESC\nLIMIT 50",
+          "format": 1
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Длительность (мс)"
+          }
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "title": "Deadlocks Details",
+      "type": "table",
+      "gridPos": {"h": 10, "w": 12, "x": 12, "y": 30},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  timestamp AS \"Дата, время\",\n  infobase_name AS \"Информационная база\",\n  description AS \"Описание\",\n  context AS \"Контекст\",\n  session_id AS \"Сессия\",\n  server_computer_name AS \"Сервер\"\nFROM logs.tech_log\nWHERE $__timeFilter(timestamp)\n  AND name = 'TDEADLOCK'\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nORDER BY timestamp DESC\nLIMIT 50",
+          "format": 1
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Дата, время"
+          }
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "title": "Memory Usage by Process",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 40},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(timestamp), 300) * 300) AS time,\n  process_name,\n  avg(memory_bytes) / 1024 / 1024 AS \"Память (MB)\"\nFROM logs.tech_log\nWHERE $__timeFilter(timestamp)\n  AND name = 'MEM'\n  AND memory_bytes > 0\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nGROUP BY time, process_name\nORDER BY time",
+          "format": 0
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "fillOpacity": 10
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "decmbytes"
+        }
+      }
+    },
+    {
+      "id": 12,
+      "title": "Lock Wait Time",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 40},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(timestamp), 300) * 300) AS time,\n  avg(wait_time_microseconds) / 1000 AS \"Avg Wait (ms)\",\n  max(wait_time_microseconds) / 1000 AS \"Max Wait (ms)\"\nFROM logs.tech_log\nWHERE $__timeFilter(timestamp)\n  AND name = 'TLOCK'\n  AND wait_time_microseconds > 0\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nGROUP BY time\nORDER BY time",
+          "format": 0
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth"
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "ms"
+        }
+      }
+    },
+    {
+      "id": 13,
+      "title": "Event Distribution by Type",
+      "type": "piechart",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 48},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  name AS event,\n  count() AS count\nFROM logs.tech_log\nWHERE $__timeFilter(timestamp)\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nGROUP BY event\nORDER BY count DESC\nLIMIT 20",
+          "format": 1
+        }
+      ],
+      "options": {
+        "pieType": "donut",
+        "tooltip": {
+          "mode": "single"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": ["value", "percent"]
+        }
+      }
+    },
+    {
+      "id": 14,
+      "title": "Connection Pool Usage",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 48},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(timestamp), 60) * 60) AS time,\n  uniq(connection_id) AS \"Active Connections\"\nFROM logs.tech_log\nWHERE $__timeFilter(timestamp)\n  AND name IN ('CONN', 'DBMSSQL')\n  AND connection_id != 0\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nGROUP BY time\nORDER BY time",
+          "format": 0
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "fillOpacity": 20
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short"
+        }
+      }
+    }
+  ]
+}
