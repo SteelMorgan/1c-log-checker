@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/1c-log-checker/internal/clickhouse"
 	"github.com/1c-log-checker/internal/mapping"
@@ -23,8 +24,8 @@ func NewNewErrorsHandler(ch *clickhouse.Client, clusterMap *mapping.ClusterMap) 
 	}
 }
 
-// GetNewErrors retrieves errors unique in last N hours
-func (h *NewErrorsHandler) GetNewErrors(ctx context.Context, params NewErrorsParams) (string, error) {
+// GetNewErrorsAggregated retrieves aggregated error statistics from last N hours
+func (h *NewErrorsHandler) GetNewErrorsAggregated(ctx context.Context, params NewErrorsParams) (string, error) {
 	// Validate GUIDs
 	if err := ValidateGUID(params.ClusterGUID, "cluster_guid"); err != nil {
 		return "", err
@@ -33,42 +34,38 @@ func (h *NewErrorsHandler) GetNewErrors(ctx context.Context, params NewErrorsPar
 		return "", err
 	}
 
-	// Set default limit
+	// Set defaults
 	if params.Limit <= 0 {
 		params.Limit = 100
 	}
+	if params.Hours <= 0 {
+		params.Hours = 48
+	}
 
-	// Query for new errors using materialized view
+	// Query aggregated errors from last N hours
 	query := `
-		SELECT 
+		SELECT
 			cluster_guid,
 			infobase_guid,
 			event_name,
 			error_text,
+			error_signature,
 			occurrences,
 			first_seen,
 			last_seen,
 			sample_lines
 		FROM logs.mv_new_errors
-		WHERE error_date = today()
-		  AND cluster_guid = ?
+		WHERE cluster_guid = ?
 		  AND infobase_guid = ?
-		  AND error_signature NOT IN (
-			  SELECT DISTINCT error_signature
-			  FROM logs.mv_new_errors
-			  WHERE error_date = today() - 1
-				AND cluster_guid = ?
-				AND infobase_guid = ?
-		  )
-		ORDER BY last_seen DESC
+		  AND last_seen >= now() - INTERVAL ? HOUR
+		ORDER BY occurrences DESC, last_seen DESC
 		LIMIT ?
 	`
-	
+
 	args := []interface{}{
 		params.ClusterGUID,
 		params.InfobaseGUID,
-		params.ClusterGUID,
-		params.InfobaseGUID,
+		params.Hours,
 		params.Limit,
 	}
 	
@@ -78,23 +75,29 @@ func (h *NewErrorsHandler) GetNewErrors(ctx context.Context, params NewErrorsPar
 		return "", fmt.Errorf("query failed: %w", err)
 	}
 	defer rows.Close()
-	
+
 	// Collect results
-	var results []map[string]interface{}
+	var results []AggregatedError
 	for rows.Next() {
-		var record map[string]interface{}
-		if err := rows.ScanStruct(&record); err != nil {
+		var record AggregatedError
+		if err := rows.Scan(
+			&record.ClusterGUID,
+			&record.InfobaseGUID,
+			&record.EventName,
+			&record.ErrorText,
+			&record.ErrorSignature,
+			&record.Occurrences,
+			&record.FirstSeen,
+			&record.LastSeen,
+			&record.SampleLines,
+		); err != nil {
 			return "", fmt.Errorf("scan failed: %w", err)
 		}
-		
+
 		// Enrich with cluster/infobase names
-		if clusterGUID, ok := record["cluster_guid"].(string); ok {
-			record["cluster_name"] = h.clusterMap.GetClusterName(clusterGUID)
-		}
-		if infobaseGUID, ok := record["infobase_guid"].(string); ok {
-			record["infobase_name"] = h.clusterMap.GetInfobaseName(infobaseGUID)
-		}
-		
+		record.ClusterName = h.clusterMap.GetClusterName(record.ClusterGUID)
+		record.InfobaseName = h.clusterMap.GetInfobaseName(record.InfobaseGUID)
+
 		results = append(results, record)
 	}
 	
@@ -111,10 +114,26 @@ func (h *NewErrorsHandler) GetNewErrors(ctx context.Context, params NewErrorsPar
 	return string(jsonData), nil
 }
 
-// NewErrorsParams defines parameters for get_new_errors tool
+// NewErrorsParams defines parameters for get_new_errors_aggregated tool
 type NewErrorsParams struct {
 	ClusterGUID  string
 	InfobaseGUID string
-	Limit        int // Max errors to return
+	Hours        int // Time window in hours (default: 48)
+	Limit        int // Max errors to return (default: 100)
+}
+
+// AggregatedError represents an aggregated error record
+type AggregatedError struct {
+	ClusterGUID    string    `json:"cluster_guid"`
+	ClusterName    string    `json:"cluster_name"`
+	InfobaseGUID   string    `json:"infobase_guid"`
+	InfobaseName   string    `json:"infobase_name"`
+	EventName      string    `json:"event_name"`
+	ErrorText      string    `json:"error_text"`
+	ErrorSignature uint64    `json:"error_signature"`
+	Occurrences    uint64    `json:"occurrences"`
+	FirstSeen      time.Time `json:"first_seen"`
+	LastSeen       time.Time `json:"last_seen"`
+	SampleLines    []string  `json:"sample_lines"`
 }
 

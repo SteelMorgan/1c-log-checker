@@ -88,8 +88,8 @@
       }
     },
     {
-      "name": "get_new_errors",
-      "description": "Get errors that appeared for the first time in the last period (comparison with previous period).\n\nIMPORTANT: Before calling this tool, you MUST:\n1. Read the file 'configs/cluster_map.yaml' using the Read tool\n2. Extract cluster_guid from the 'clusters' section\n3. Extract infobase_guid from the 'infobases' section\n4. Use these exact GUID values in your tool call\n\nThis tool is optimal for:\n- Quick overview of new issues\n- Initial error investigation\n- Monitoring for regression\n\nExample workflow:\n1. Read configs/cluster_map.yaml\n2. Extract GUIDs\n3. Call: get_new_errors(cluster_guid='<from-config>', infobase_guid='<from-config>', limit=50)\n4. For details on specific errors → use get_event_log or get_tech_log",
+      "name": "get_new_errors_aggregated",
+      "description": "Get aggregated statistics of new errors from technical log with deduplication (based on mv_new_errors materialized view).\n\nIMPORTANT: Before calling this tool, you MUST:\n1. Read the file 'configs/cluster_map.yaml' using the Read tool\n2. Extract cluster_guid from the 'clusters' section\n3. Extract infobase_guid from the 'infobases' section\n4. Use these exact GUID values in your tool call\n\nThis tool:\n- Queries aggregated tech_log errors (EXCP, ERROR levels)\n- Uses error deduplication by error signature (sipHash64)\n- Returns statistics: occurrences count, first_seen, last_seen timestamps\n- Includes sample log lines for each unique error\n- Analyzes errors from last 48 hours by default\n\nDifference from get_event_log:\n- get_event_log: returns individual journal records (raw event log)\n- get_new_errors_aggregated: returns aggregated tech_log error statistics with deduplication\n\nThis tool is optimal for:\n- Quick overview of unique errors with occurrence counts\n- Identifying most frequent error patterns\n- Error trend analysis with time ranges\n- Initial error investigation before deep dive\n\nExample workflow:\n1. Read configs/cluster_map.yaml\n2. Extract GUIDs\n3. Call: get_new_errors_aggregated(cluster_guid='<from-config>', infobase_guid='<from-config>', hours=48, limit=50)\n4. For detailed context on specific error → use get_tech_log with specific timeframe",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -101,9 +101,16 @@
             "type": "string",
             "description": "Infobase GUID (MUST be obtained from configs/cluster_map.yaml). NEVER use placeholder values."
           },
+          "hours": {
+            "type": "integer",
+            "description": "Time window in hours to analyze. Default: 48 hours.",
+            "default": 48,
+            "minimum": 1,
+            "maximum": 168
+          },
           "limit": {
             "type": "integer",
-            "description": "Maximum number of new errors to return. Default: 100.",
+            "description": "Maximum number of aggregated errors to return. Default: 100.",
             "default": 100,
             "minimum": 1,
             "maximum": 1000
