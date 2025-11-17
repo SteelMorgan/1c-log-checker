@@ -32,6 +32,14 @@ type Config struct {
 	ClusterMapPath string // Path to cluster_map.yaml (used only by MCP server, not parser)
 	TechLogConfigDir string // Directory for logcfg.xml file (mounted from host)
 
+	// GUID Enrichment (GUID → Presentation)
+	// MCP-server initiated: collects unknown GUIDs and requests 1C for presentations
+	EnrichmentEnabled  bool   // Enable enrichment worker
+	EnrichmentEndpoint string // 1C HTTP endpoint (e.g., "http://1c-server:8080")
+	EnrichmentAPIKey   string // API key for authentication
+	EnrichmentBatchSize int   // Max GUIDs per request (default: 500)
+	EnrichmentInterval int    // Worker interval in minutes (default: 10)
+
 	// Observability
 	LogLevel       string
 	TracingEnabled bool
@@ -61,6 +69,12 @@ func Load() (*Config, error) {
 		MCPPort:       getEnvInt("MCP_PORT", 8080),
 		ClusterMapPath: getEnv("CLUSTER_MAP_PATH", "configs/cluster_map.yaml"),
 		TechLogConfigDir: getEnv("TECHLOG_CONFIG_DIR", "/app/configs/techlog"), // Default inside container
+
+		EnrichmentEnabled:  getEnvBool("ENRICHMENT_ENABLED", false),
+		EnrichmentEndpoint: getEnv("ENRICHMENT_ENDPOINT", ""),
+		EnrichmentAPIKey:   getEnv("ENRICHMENT_API_KEY", ""),
+		EnrichmentBatchSize: getEnvInt("ENRICHMENT_BATCH_SIZE", 500),
+		EnrichmentInterval: getEnvInt("ENRICHMENT_INTERVAL", 10), // minutes
 
 		LogLevel:       getEnv("LOG_LEVEL", "info"),
 		TracingEnabled: getEnvBool("TRACING_ENABLED", false),

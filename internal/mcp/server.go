@@ -12,6 +12,7 @@ import (
 	"github.com/1c-log-checker/internal/config"
 	"github.com/1c-log-checker/internal/handlers"
 	"github.com/1c-log-checker/internal/mapping"
+	"github.com/1c-log-checker/internal/service"
 	"github.com/rs/zerolog/log"
 )
 
@@ -21,7 +22,10 @@ type Server struct {
 	httpServer  *http.Server
 	chClient    *clickhouse.Client
 	clusterMap  *mapping.ClusterMap
-	
+
+	// Workers
+	enrichmentWorker *service.EnrichmentWorker
+
 	// Handlers
 	eventLogHandler           *handlers.EventLogHandler
 	techLogHandler            *handlers.TechLogHandler
@@ -67,10 +71,34 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	getTechCfgHandler := handlers.NewGetTechLogConfigHandler()
 	getActualLogTimestampHandler := handlers.NewGetActualLogTimestampHandler(chClient)
 
+	// Initialize enrichment worker if enabled
+	var enrichmentWorker *service.EnrichmentWorker
+	if cfg.EnrichmentEnabled {
+		// Extract infobase GUIDs from cluster map
+		infobases := make([]string, 0, len(clusterMap.Infobases))
+		for guid := range clusterMap.Infobases {
+			infobases = append(infobases, guid)
+		}
+
+		enrichmentWorker = service.NewEnrichmentWorker(
+			chClient,
+			cfg.EnrichmentEndpoint,
+			cfg.EnrichmentAPIKey,
+			time.Duration(cfg.EnrichmentInterval)*time.Minute,
+			infobases,
+		)
+
+		log.Info().
+			Int("infobases", len(infobases)).
+			Str("endpoint", cfg.EnrichmentEndpoint).
+			Msg("Enrichment worker initialized")
+	}
+
 	return &Server{
 		cfg:                       cfg,
 		chClient:                  chClient,
 		clusterMap:                clusterMap,
+		enrichmentWorker:          enrichmentWorker,
 		eventLogHandler:           eventLogHandler,
 		techLogHandler:            techLogHandler,
 		newErrorsHandler:          newErrorsHandler,
@@ -88,10 +116,10 @@ func (s *Server) Start(ctx context.Context) error {
 	log.Info().
 		Int("port", s.cfg.MCPPort).
 		Msg("MCP server starting...")
-	
+
 	// Setup HTTP server with MCP tool endpoints
 	mux := http.NewServeMux()
-	
+
 	// Register tool endpoints
 	mux.HandleFunc("/tools/get_event_log", s.handleGetEventLog)
 	mux.HandleFunc("/tools/get_tech_log", s.handleGetTechLog)
@@ -102,26 +130,32 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/tools/disable_techlog", s.handleDisableTechLog)
 	mux.HandleFunc("/tools/get_techlog_config", s.handleGetTechLogConfig)
 	mux.HandleFunc("/tools/get_actual_log_timestamp", s.handleGetActualLogTimestamp)
-	
+
 	// Health check
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
-	
+
 	s.httpServer = &http.Server{
 		Addr:    fmt.Sprintf(":%d", s.cfg.MCPPort),
 		Handler: mux,
 	}
-	
+
 	// Start HTTP server in goroutine
 	go func() {
 		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Error().Err(err).Msg("HTTP server error")
 		}
 	}()
-	
+
 	log.Info().Int("port", s.cfg.MCPPort).Msg("MCP server started")
-	
+
+	// Start enrichment worker if enabled
+	if s.enrichmentWorker != nil {
+		go s.enrichmentWorker.Start(ctx)
+		log.Info().Msg("Enrichment worker started")
+	}
+
 	// Wait for context cancellation
 	<-ctx.Done()
 	return nil
@@ -130,22 +164,28 @@ func (s *Server) Start(ctx context.Context) error {
 // Stop stops the MCP server gracefully
 func (s *Server) Stop() error {
 	log.Info().Msg("MCP server stopping...")
-	
+
+	// Stop enrichment worker first
+	if s.enrichmentWorker != nil {
+		s.enrichmentWorker.Stop()
+		log.Info().Msg("Enrichment worker stopped")
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	
+
 	if s.httpServer != nil {
 		if err := s.httpServer.Shutdown(ctx); err != nil {
 			log.Error().Err(err).Msg("Error shutting down HTTP server")
 		}
 	}
-	
+
 	if s.chClient != nil {
 		if err := s.chClient.Close(); err != nil {
 			log.Error().Err(err).Msg("Error closing ClickHouse client")
 		}
 	}
-	
+
 	log.Info().Msg("MCP server stopped")
 	return nil
 }

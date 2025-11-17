@@ -1,0 +1,253 @@
+{
+  "title": "1C Combined - All Errors (Event Log + Tech Log)",
+  "uid": "1c-combined-all-errors",
+  "version": 1,
+  "schemaVersion": 38,
+  "tags": ["1c", "combined", "errors", "enriched"],
+  "timezone": "browser",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "refresh": "5m",
+  "templating": {
+    "list": [
+      {
+        "name": "infobase",
+        "type": "query",
+        "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+        "query": "SELECT DISTINCT infobase_name FROM logs.event_log WHERE infobase_name != '' UNION ALL SELECT DISTINCT infobase_name FROM logs.tech_log WHERE infobase_name != '' ORDER BY infobase_name",
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": "$__all"
+        },
+        "includeAll": true,
+        "multi": true,
+        "allValue": null
+      },
+      {
+        "name": "source",
+        "type": "custom",
+        "query": "Event Log,Tech Log",
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": "$__all"
+        },
+        "includeAll": true,
+        "multi": true,
+        "allValue": null
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Total Errors - Last 24 Hours",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 8, "x": 0, "y": 0},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  sum(error_count) AS total_errors\nFROM (\n  SELECT count() AS error_count\n  FROM logs.event_log\n  WHERE event_time >= now() - INTERVAL 24 HOUR\n    AND level = 'Error'\n    AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\n    AND ('$__all' IN ($source) OR 'Event Log' IN ($source))\n  UNION ALL\n  SELECT count() AS error_count\n  FROM logs.tech_log\n  WHERE timestamp >= now() - INTERVAL 24 HOUR\n    AND name IN ('EXCP', 'ERR', 'EXCPTXT')\n    AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\n    AND ('$__all' IN ($source) OR 'Tech Log' IN ($source))\n)",
+          "format": 1
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"value": 0, "color": "green"},
+              {"value": 50, "color": "yellow"},
+              {"value": 200, "color": "red"}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Event Log Errors",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 8, "x": 8, "y": 0},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT count() AS error_count\nFROM logs.event_log\nWHERE event_time >= now() - INTERVAL 24 HOUR\n  AND level = 'Error'\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))",
+          "format": 1
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "orange"
+          }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Tech Log Exceptions",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 8, "x": 16, "y": 0},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT count() AS error_count\nFROM logs.tech_log\nWHERE timestamp >= now() - INTERVAL 24 HOUR\n  AND name IN ('EXCP', 'ERR', 'EXCPTXT')\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))",
+          "format": 1
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "red"
+          }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Combined Errors Timeline",
+      "type": "timeseries",
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 4},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(event_time), 300) * 300) AS time,\n  'Event Log' AS source,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND level = 'Error'\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\n  AND ('$__all' IN ($source) OR 'Event Log' IN ($source))\nGROUP BY time\n\nUNION ALL\n\nSELECT\n  toDateTime(intDiv(toUInt32(timestamp), 300) * 300) AS time,\n  'Tech Log' AS source,\n  count() AS count\nFROM logs.tech_log\nWHERE $__timeFilter(timestamp)\n  AND name IN ('EXCP', 'ERR', 'EXCPTXT')\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\n  AND ('$__all' IN ($source) OR 'Tech Log' IN ($source))\nGROUP BY time\n\nORDER BY time",
+          "format": 0
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "fillOpacity": 20,
+            "stacking": {
+              "mode": "normal"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Top Error Sources",
+      "type": "piechart",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 14},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  source,\n  count\nFROM (\n  SELECT 'Event Log' AS source, count() AS count\n  FROM logs.event_log\n  WHERE $__timeFilter(event_time)\n    AND level = 'Error'\n    AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\n    AND ('$__all' IN ($source) OR 'Event Log' IN ($source))\n  \n  UNION ALL\n  \n  SELECT 'Tech Log' AS source, count() AS count\n  FROM logs.tech_log\n  WHERE $__timeFilter(timestamp)\n    AND name IN ('EXCP', 'ERR', 'EXCPTXT')\n    AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\n    AND ('$__all' IN ($source) OR 'Tech Log' IN ($source))\n)",
+          "format": 1
+        }
+      ],
+      "options": {
+        "pieType": "donut",
+        "tooltip": {
+          "mode": "single"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": ["value", "percent"]
+        }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Errors by Infobase",
+      "type": "barchart",
+      "gridPos": {"h": 8, "w": 16, "x": 8, "y": 14},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  infobase_name,\n  source,\n  count\nFROM (\n  SELECT infobase_name, 'Event Log' AS source, count() AS count\n  FROM logs.event_log\n  WHERE $__timeFilter(event_time)\n    AND level = 'Error'\n    AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\n    AND ('$__all' IN ($source) OR 'Event Log' IN ($source))\n    AND infobase_name != ''\n  GROUP BY infobase_name\n  \n  UNION ALL\n  \n  SELECT infobase_name, 'Tech Log' AS source, count() AS count\n  FROM logs.tech_log\n  WHERE $__timeFilter(timestamp)\n    AND name IN ('EXCP', 'ERR', 'EXCPTXT')\n    AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\n    AND ('$__all' IN ($source) OR 'Tech Log' IN ($source))\n    AND infobase_name != ''\n  GROUP BY infobase_name\n)\nORDER BY infobase_name, source",
+          "format": 1
+        }
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "xField": "count",
+        "groupBy": ["infobase_name"],
+        "stacking": "normal"
+      }
+    },
+    {
+      "id": 7,
+      "title": "Combined Errors List (All Sources)",
+      "type": "table",
+      "gridPos": {"h": 16, "w": 24, "x": 0, "y": 22},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  timestamp AS \"Дата, время\",\n  source AS \"Источник\",\n  infobase_name AS \"Информационная база\",\n  user_name AS \"Пользователь\",\n  metadata AS \"Метаданные\",\n  error_description AS \"Описание ошибки\",\n  computer AS \"Компьютер/Сервер\"\nFROM (\n  -- Event Log errors\n  SELECT\n    el.event_time AS timestamp,\n    'Event Log' AS source,\n    el.infobase_name,\n    COALESCE(um.user_name, el.user_name) AS user_name,\n    CASE\n      WHEN el.metadata_presentation != '' THEN el.metadata_presentation\n      ELSE COALESCE(\n        (\n          SELECT mm.metadata_name\n          FROM logs.metadata_map mm\n          WHERE mm.infobase_guid = el.infobase_guid\n            AND mm.metadata_guid = reinterpretAsUUID(unhex(replaceAll(extractAll(el.metadata_name, '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')[1], '-', '')))\n          ORDER BY mm.version DESC\n          LIMIT 1\n        ),\n        el.metadata_name\n      )\n    END AS metadata,\n    el.comment AS error_description,\n    el.computer\n  FROM logs.event_log el\n  LEFT JOIN (\n    SELECT infobase_guid, user_guid, argMax(user_name, version) AS user_name\n    FROM logs.user_map\n    GROUP BY infobase_guid, user_guid\n  ) um ON el.infobase_guid = um.infobase_guid AND el.user_id = um.user_guid\n  WHERE $__timeFilter(event_time)\n    AND el.level = 'Error'\n    AND ('$__all' IN ($infobase) OR el.infobase_name IN ($infobase))\n    AND ('$__all' IN ($source) OR 'Event Log' IN ($source))\n  \n  UNION ALL\n  \n  -- Tech Log exceptions\n  SELECT\n    tl.timestamp,\n    'Tech Log' AS source,\n    tl.infobase_name,\n    '' AS user_name,\n    CASE\n      WHEN match(tl.metadata_name, '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')\n      THEN COALESCE(\n        (\n          SELECT mm.metadata_name\n          FROM logs.metadata_map mm\n          WHERE mm.infobase_guid = tl.infobase_guid\n            AND mm.metadata_guid = reinterpretAsUUID(unhex(replaceAll(extractAll(tl.metadata_name, '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')[1], '-', '')))\n          ORDER BY mm.version DESC\n          LIMIT 1\n        ),\n        tl.metadata_name\n      )\n      ELSE tl.metadata_name\n    END AS metadata,\n    concat(tl.name, ': ', tl.error_description) AS error_description,\n    tl.server_computer_name AS computer\n  FROM logs.tech_log tl\n  WHERE $__timeFilter(timestamp)\n    AND tl.name IN ('EXCP', 'ERR', 'EXCPTXT')\n    AND ('$__all' IN ($infobase) OR tl.infobase_name IN ($infobase))\n    AND ('$__all' IN ($source) OR 'Tech Log' IN ($source))\n)\nORDER BY timestamp DESC\nLIMIT 2000",
+          "format": 1
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Дата, время"
+          }
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "title": "Error Frequency Heatmap",
+      "type": "heatmap",
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 38},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  time,\n  source,\n  count\nFROM (\n  SELECT\n    toDateTime(intDiv(toUInt32(event_time), 3600) * 3600) AS time,\n    'Event Log' AS source,\n    count() AS count\n  FROM logs.event_log\n  WHERE $__timeFilter(event_time)\n    AND level = 'Error'\n    AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\n    AND ('$__all' IN ($source) OR 'Event Log' IN ($source))\n  GROUP BY time\n  \n  UNION ALL\n  \n  SELECT\n    toDateTime(intDiv(toUInt32(timestamp), 3600) * 3600) AS time,\n    'Tech Log' AS source,\n    count() AS count\n  FROM logs.tech_log\n  WHERE $__timeFilter(timestamp)\n    AND name IN ('EXCP', 'ERR', 'EXCPTXT')\n    AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\n    AND ('$__all' IN ($source) OR 'Tech Log' IN ($source))\n  GROUP BY time\n)\nORDER BY time",
+          "format": 0
+        }
+      ],
+      "options": {
+        "calculate": false,
+        "cellGap": 2,
+        "color": {
+          "mode": "spectrum",
+          "scheme": "RdYlGn",
+          "reverse": true
+        },
+        "yAxis": {
+          "axisPlacement": "left"
+        }
+      }
+    }
+  ]
+}

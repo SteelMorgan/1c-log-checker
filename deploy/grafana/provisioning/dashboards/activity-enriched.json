@@ -1,0 +1,193 @@
+{
+  "title": "1C Event Log - Activity (Enriched)",
+  "uid": "1c-event-log-activity-enriched",
+  "version": 1,
+  "schemaVersion": 38,
+  "tags": ["1c", "event-log", "enriched"],
+  "timezone": "browser",
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "refresh": "1m",
+  "templating": {
+    "list": [
+      {
+        "name": "infobase",
+        "type": "query",
+        "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+        "query": "SELECT DISTINCT infobase_name FROM logs.event_log WHERE infobase_name != '' ORDER BY infobase_name",
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": "$__all"
+        },
+        "includeAll": true,
+        "multi": true,
+        "allValue": null
+      },
+      {
+        "name": "user",
+        "type": "query",
+        "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+        "query": "SELECT DISTINCT COALESCE(um.user_name, el.user_name) AS user_name FROM logs.event_log el LEFT JOIN logs.user_map um ON el.infobase_guid = um.infobase_guid AND el.user_id = um.user_guid WHERE user_name != '' ORDER BY user_name",
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": "$__all"
+        },
+        "includeAll": true,
+        "multi": true,
+        "allValue": null
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Events Timeline by Level",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(event_time), 300) * 300) AS time,\n  level,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nGROUP BY time, level\nORDER BY time",
+          "format": 0
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "fillOpacity": 10
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": []
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Events Timeline by User (Enriched)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(event_time), 300) * 300) AS time,\n  COALESCE(um.user_name, el.user_name) AS user,\n  count() AS count\nFROM logs.event_log el\nLEFT JOIN (\n  SELECT infobase_guid, user_guid, argMax(user_name, version) AS user_name\n  FROM logs.user_map\n  GROUP BY infobase_guid, user_guid\n) um ON el.infobase_guid = um.infobase_guid AND el.user_id = um.user_guid\nWHERE $__timeFilter(event_time)\n  AND ('$__all' IN ($infobase) OR el.infobase_name IN ($infobase))\n  AND ('$__all' IN ($user) OR COALESCE(um.user_name, el.user_name) IN ($user))\n  AND el.user_name != ''\nGROUP BY time, user\nORDER BY time, count DESC\nLIMIT 10",
+          "format": 0
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth"
+          }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Top 10 Most Active Users (Enriched)",
+      "type": "barchart",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  COALESCE(um.user_name, el.user_name) AS user,\n  count() AS event_count\nFROM logs.event_log el\nLEFT JOIN (\n  SELECT infobase_guid, user_guid, argMax(user_name, version) AS user_name\n  FROM logs.user_map\n  GROUP BY infobase_guid, user_guid\n) um ON el.infobase_guid = um.infobase_guid AND el.user_id = um.user_guid\nWHERE $__timeFilter(event_time)\n  AND ('$__all' IN ($infobase) OR el.infobase_name IN ($infobase))\n  AND el.user_name != ''\nGROUP BY user\nORDER BY event_count DESC\nLIMIT 10",
+          "format": 1
+        }
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "xField": "event_count",
+        "colorByField": "user"
+      }
+    },
+    {
+      "id": 4,
+      "title": "Events Distribution by Type",
+      "type": "piechart",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "rawSql": "SELECT\n  event_presentation AS event,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nGROUP BY event\nORDER BY count DESC\nLIMIT 15",
+          "refId": "A",
+          "queryType": "sql",
+          "format": 1
+        }
+      ],
+      "options": {
+        "pieType": "pie",
+        "tooltip": {
+          "mode": "single"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "right"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Events List (Enriched with User & Metadata Names)",
+      "type": "table",
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 16},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "rawSql": "SELECT\n  el.event_time AS \"Дата, время\",\n  el.infobase_name AS \"Информационная база\",\n  COALESCE(um.user_name, el.user_name) AS \"Пользователь\",\n  el.computer AS \"Компьютер\",\n  el.application_presentation AS \"Приложение\",\n  el.event_presentation AS \"Событие\",\n  CASE\n    WHEN el.metadata_presentation != '' THEN el.metadata_presentation\n    ELSE COALESCE(\n      (\n        SELECT mm.metadata_name\n        FROM logs.metadata_map mm\n        WHERE mm.infobase_guid = el.infobase_guid\n          AND mm.metadata_guid = reinterpretAsUUID(unhex(replaceAll(extractAll(el.metadata_name, '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')[1], '-', '')))\n        ORDER BY mm.version DESC\n        LIMIT 1\n      ),\n      el.metadata_name\n    )\n  END AS \"Метаданные\",\n  el.comment AS \"Комментарий\",\n  el.transaction_status AS \"Статус транзакции\"\nFROM logs.event_log el\nLEFT JOIN (\n  SELECT infobase_guid, user_guid, argMax(user_name, version) AS user_name\n  FROM logs.user_map\n  GROUP BY infobase_guid, user_guid\n) um ON el.infobase_guid = um.infobase_guid AND el.user_id = um.user_guid\nWHERE $__timeFilter(event_time)\n  AND ('$__all' IN ($infobase) OR el.infobase_name IN ($infobase))\n  AND ('$__all' IN ($user) OR COALESCE(um.user_name, el.user_name) IN ($user))\nORDER BY el.event_time DESC\nLIMIT 1000",
+          "refId": "A",
+          "queryType": "sql",
+          "format": 1
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Дата, время"
+          }
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "title": "User Activity Heatmap",
+      "type": "heatmap",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 28},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(event_time), 3600) * 3600) AS time,\n  COALESCE(um.user_name, el.user_name) AS user,\n  count() AS count\nFROM logs.event_log el\nLEFT JOIN (\n  SELECT infobase_guid, user_guid, argMax(user_name, version) AS user_name\n  FROM logs.user_map\n  GROUP BY infobase_guid, user_guid\n) um ON el.infobase_guid = um.infobase_guid AND el.user_id = um.user_guid\nWHERE $__timeFilter(event_time)\n  AND ('$__all' IN ($infobase) OR el.infobase_name IN ($infobase))\n  AND el.user_name != ''\nGROUP BY time, user\nORDER BY time",
+          "format": 0
+        }
+      ],
+      "options": {
+        "calculate": false,
+        "cellGap": 2,
+        "color": {
+          "mode": "spectrum",
+          "scheme": "Spectral"
+        },
+        "yAxis": {
+          "axisPlacement": "left"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,258 @@
+{
+  "title": "1C Event Log - Errors (Enriched)",
+  "uid": "1c-event-log-errors-enriched",
+  "version": 1,
+  "schemaVersion": 38,
+  "tags": ["1c", "event-log", "errors", "enriched"],
+  "timezone": "browser",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "refresh": "5m",
+  "templating": {
+    "list": [
+      {
+        "name": "infobase",
+        "type": "query",
+        "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+        "query": "SELECT DISTINCT infobase_name FROM logs.event_log WHERE infobase_name != '' ORDER BY infobase_name",
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": "$__all"
+        },
+        "includeAll": true,
+        "multi": true,
+        "allValue": null
+      },
+      {
+        "name": "user",
+        "type": "query",
+        "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+        "query": "SELECT DISTINCT COALESCE(um.user_name, el.user_name) AS user_name FROM logs.event_log el LEFT JOIN logs.user_map um ON el.infobase_guid = um.infobase_guid AND el.user_id = um.user_guid WHERE level = 'Error' AND user_name != '' ORDER BY user_name",
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": "$__all"
+        },
+        "includeAll": true,
+        "multi": true,
+        "allValue": null
+      },
+      {
+        "name": "event_type",
+        "type": "query",
+        "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+        "query": "SELECT DISTINCT event_presentation FROM logs.event_log WHERE level = 'Error' ORDER BY event_presentation",
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": "$__all"
+        },
+        "includeAll": true,
+        "multi": true,
+        "allValue": null
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "New Errors - Last 24 Hours",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT count() AS error_count\nFROM logs.event_log\nWHERE event_time >= now() - INTERVAL 24 HOUR\n  AND level = 'Error'\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))",
+          "format": 1
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"value": 0, "color": "green"},
+              {"value": 10, "color": "yellow"},
+              {"value": 100, "color": "red"}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Errors Timeline",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 18, "x": 6, "y": 0},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(event_time), 300) * 300) AS time,\n  count() AS errors\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND level = 'Error'\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nGROUP BY time\nORDER BY time",
+          "format": 0
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "fillOpacity": 20
+          },
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "red"
+          }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Unique Errors - Last 24 Hours",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 4},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT uniq(comment) AS unique_errors\nFROM logs.event_log\nWHERE event_time >= now() - INTERVAL 24 HOUR\n  AND level = 'Error'\n  AND comment != ''\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))",
+          "format": 1
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"value": 0, "color": "green"},
+              {"value": 5, "color": "yellow"},
+              {"value": 20, "color": "orange"}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Top 20 Errors (Normalized by Keywords)",
+      "type": "table",
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 8},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "WITH normalized_errors AS (\n  SELECT\n    -- Normalize error message by extracting key patterns\n    -- Remove dynamic parts like numbers, GUIDs, timestamps\n    replaceRegexpAll(\n      replaceRegexpAll(\n        replaceRegexpAll(\n          replaceRegexpAll(\n            comment,\n            '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',\n            '<GUID>'\n          ),\n          '\\\\d{4}-\\\\d{2}-\\\\d{2}[T ]\\\\d{2}:\\\\d{2}:\\\\d{2}',\n          '<TIMESTAMP>'\n        ),\n        '\\\\b\\\\d+\\\\b',\n        '<NUMBER>'\n      ),\n      '\"[^\"]*\"',\n      '<STRING>'\n    ) AS normalized_comment,\n    event_presentation,\n    event_time,\n    comment,\n    infobase_name,\n    COALESCE(um.user_name, el.user_name) AS user_name\n  FROM logs.event_log el\n  LEFT JOIN (\n    SELECT infobase_guid, user_guid, argMax(user_name, version) AS user_name\n    FROM logs.user_map\n    GROUP BY infobase_guid, user_guid\n  ) um ON el.infobase_guid = um.infobase_guid AND el.user_id = um.user_guid\n  WHERE $__timeFilter(event_time)\n    AND level = 'Error'\n    AND comment != ''\n    AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\n)\nSELECT\n  normalized_comment AS \"Нормализованная ошибка\",\n  count() AS \"Количество\",\n  min(event_time) AS \"Первое появление\",\n  max(event_time) AS \"Последнее появление\",\n  groupArray(DISTINCT event_presentation) AS \"Типы событий\",\n  groupArray(DISTINCT infobase_name) AS \"Информационные базы\",\n  any(comment) AS \"Пример исходной ошибки\"\nFROM normalized_errors\nGROUP BY normalized_comment\nORDER BY count() DESC\nLIMIT 20",
+          "format": 1
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Количество"
+          }
+        ]
+      },
+      "fieldConfig": {
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "Количество"},
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 100
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "title": "All Errors List (Enriched with Filters)",
+      "type": "table",
+      "gridPos": {"h": 16, "w": 24, "x": 0, "y": 20},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  el.event_time AS \"Дата, время\",\n  el.infobase_name AS \"Информационная база\",\n  COALESCE(um.user_name, el.user_name) AS \"Пользователь\",\n  el.computer AS \"Компьютер\",\n  el.application_presentation AS \"Приложение\",\n  el.event_presentation AS \"Событие\",\n  CASE\n    WHEN el.metadata_presentation != '' THEN el.metadata_presentation\n    ELSE COALESCE(\n      (\n        SELECT mm.metadata_name\n        FROM logs.metadata_map mm\n        WHERE mm.infobase_guid = el.infobase_guid\n          AND mm.metadata_guid = reinterpretAsUUID(unhex(replaceAll(extractAll(el.metadata_name, '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')[1], '-', '')))\n        ORDER BY mm.version DESC\n        LIMIT 1\n      ),\n      el.metadata_name\n    )\n  END AS \"Метаданные\",\n  el.comment AS \"Описание ошибки\",\n  el.data_presentation AS \"Данные\",\n  el.transaction_status AS \"Статус транзакции\"\nFROM logs.event_log el\nLEFT JOIN (\n  SELECT infobase_guid, user_guid, argMax(user_name, version) AS user_name\n  FROM logs.user_map\n  GROUP BY infobase_guid, user_guid\n) um ON el.infobase_guid = um.infobase_guid AND el.user_id = um.user_guid\nWHERE $__timeFilter(event_time)\n  AND el.level = 'Error'\n  AND ('$__all' IN ($infobase) OR el.infobase_name IN ($infobase))\n  AND ('$__all' IN ($user) OR COALESCE(um.user_name, el.user_name) IN ($user))\n  AND ('$__all' IN ($event_type) OR el.event_presentation IN ($event_type))\nORDER BY el.event_time DESC\nLIMIT 5000",
+          "format": 1
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Дата, время"
+          }
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "title": "Errors by User (Enriched)",
+      "type": "piechart",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 36},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  COALESCE(um.user_name, el.user_name) AS user,\n  count() AS error_count\nFROM logs.event_log el\nLEFT JOIN (\n  SELECT infobase_guid, user_guid, argMax(user_name, version) AS user_name\n  FROM logs.user_map\n  GROUP BY infobase_guid, user_guid\n) um ON el.infobase_guid = um.infobase_guid AND el.user_id = um.user_guid\nWHERE $__timeFilter(event_time)\n  AND el.level = 'Error'\n  AND ('$__all' IN ($infobase) OR el.infobase_name IN ($infobase))\n  AND el.user_name != ''\nGROUP BY user\nORDER BY error_count DESC\nLIMIT 15",
+          "format": 1
+        }
+      ],
+      "options": {
+        "pieType": "donut",
+        "tooltip": {
+          "mode": "single"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": ["value", "percent"]
+        }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Errors by Event Type",
+      "type": "barchart",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 36},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  event_presentation AS event,\n  count() AS error_count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND level = 'Error'\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nGROUP BY event\nORDER BY error_count DESC\nLIMIT 15",
+          "format": 1
+        }
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "xField": "error_count",
+        "colorByField": "event"
+      }
+    }
+  ]
+}
