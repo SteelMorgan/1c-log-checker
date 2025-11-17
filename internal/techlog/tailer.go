@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/1c-log-checker/internal/domain"
@@ -39,14 +40,19 @@ type Tailer struct {
 	historyProcessed     bool // Flag to track if historical files have been processed
 	stopCh               chan struct{}
 	onHistoricalComplete func() // Callback called after historical files processing completes
+	maxWorkers           int // Max parallel workers for historical file processing
 }
 
 // NewTailer creates a new tech log tailer
-func NewTailer(dirPath string, isJSON bool, offsetStore offset.OffsetStore) *Tailer {
+func NewTailer(dirPath string, isJSON bool, offsetStore offset.OffsetStore, maxWorkers int) *Tailer {
 	var techLogStore TechLogOffsetStore
 	// Try to cast to BoltDBStore which implements TechLogOffsetStore
 	if boltStore, ok := offsetStore.(*offset.BoltDBStore); ok {
 		techLogStore = boltStore
+	}
+
+	if maxWorkers <= 0 {
+		maxWorkers = 4 // Default
 	}
 
 	return &Tailer{
@@ -55,6 +61,7 @@ func NewTailer(dirPath string, isJSON bool, offsetStore offset.OffsetStore) *Tai
 		offsetStore: techLogStore,
 		batchSize:   500, // Save offset every 500 records
 		stopCh:      make(chan struct{}),
+		maxWorkers:  maxWorkers,
 	}
 }
 
@@ -363,55 +370,121 @@ type fileWithTimestamp struct {
 	Timestamp time.Time
 }
 
-// processHistoricalFiles processes all historical log files in chronological order
+// processHistoricalFiles processes all historical log files with parallel workers
 func (t *Tailer) processHistoricalFiles(ctx context.Context, handler func(*domain.TechLogRecord) error) error {
 	log.Info().Str("dir", t.dirPath).Msg("Processing historical log files")
-	
+
 	files, err := t.findAllLogFiles()
 	if err != nil {
 		return fmt.Errorf("failed to find log files: %w", err)
 	}
-	
+
 	if len(files) == 0 {
 		log.Info().Str("dir", t.dirPath).Msg("No historical files found")
 		return nil
 	}
-	
+
 	log.Info().
 		Str("dir", t.dirPath).
 		Int("files_count", len(files)).
+		Int("max_workers", t.maxWorkers).
 		Msg("Found historical files to process")
-	
-	// Process each file
-	for i, file := range files {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-t.stopCh:
-			return nil
-		default:
+
+	// Create channels for work distribution
+	fileChan := make(chan string, len(files))
+	errChan := make(chan error, len(files))
+	doneChan := make(chan struct{})
+
+	// Start worker pool
+	var wg sync.WaitGroup
+	for w := 0; w < t.maxWorkers; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for filePath := range fileChan {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.stopCh:
+					return
+				default:
+				}
+
+				log.Debug().
+					Str("file", filePath).
+					Int("worker", workerID).
+					Msg("Worker processing file")
+
+				if err := t.processFile(ctx, filePath, handler); err != nil {
+					log.Warn().
+						Err(err).
+						Str("file", filePath).
+						Int("worker", workerID).
+						Msg("Failed to process file")
+					errChan <- err
+				}
+			}
+		}(w)
+	}
+
+	// Send files to workers
+	go func() {
+		for i, file := range files {
+			select {
+			case <-ctx.Done():
+				close(fileChan)
+				return
+			case <-t.stopCh:
+				close(fileChan)
+				return
+			case fileChan <- file:
+				log.Info().
+					Str("file", file).
+					Int("file_num", i+1).
+					Int("total_files", len(files)).
+					Msg("Queued file for processing")
+			}
 		}
-		
-		log.Info().
-			Str("file", file).
-			Int("file_num", i+1).
-			Int("total_files", len(files)).
-			Msg("Processing historical file")
-		
-		if err := t.processFile(ctx, file, handler); err != nil {
-			log.Warn().
-				Err(err).
-				Str("file", file).
-				Msg("Failed to process historical file, continuing with next")
-			// Continue with next file
+		close(fileChan)
+	}()
+
+	// Wait for all workers to finish
+	go func() {
+		wg.Wait()
+		close(doneChan)
+	}()
+
+	// Collect errors
+	var errors []error
+	errCollector := func() {
+		for err := range errChan {
+			errors = append(errors, err)
 		}
 	}
-	
+	go errCollector()
+
+	// Wait for completion or context cancellation
+	select {
+	case <-doneChan:
+		close(errChan)
+		// Give error collector time to finish
+		time.Sleep(100 * time.Millisecond)
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.stopCh:
+		return nil
+	}
+
 	log.Info().
 		Str("dir", t.dirPath).
 		Int("files_processed", len(files)).
+		Int("errors", len(errors)).
 		Msg("Finished processing historical files")
-	
+
+	if len(errors) > 0 {
+		return fmt.Errorf("encountered %d errors during processing", len(errors))
+	}
+
 	return nil
 }
 

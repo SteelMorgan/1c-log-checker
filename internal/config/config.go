@@ -23,6 +23,7 @@ type Config struct {
 	ReadOnly            bool // Technical mode: read logs but don't write to ClickHouse
 	OffsetMirror        bool // Mirror offset storage to ClickHouse
 	EnableDeduplication bool // Enable deduplication check (slower but prevents duplicates)
+	MaxWorkers          int  // Max parallel workers for file processing (default: 4)
 
 	// MCP settings
 	MCPPort       int
@@ -51,6 +52,7 @@ func Load() (*Config, error) {
 		ReadOnly:            getEnvBool("READ_ONLY", false),
 		OffsetMirror:        getEnvBool("OFFSET_MIRROR", false),
 		EnableDeduplication: getEnvBool("ENABLE_DEDUPLICATION", false),
+		MaxWorkers:          getEnvInt("MAX_WORKERS", 4),
 
 		MCPPort:       getEnvInt("MCP_PORT", 8080),
 		ClusterMapPath: getEnv("CLUSTER_MAP_PATH", "configs/cluster_map.yaml"),

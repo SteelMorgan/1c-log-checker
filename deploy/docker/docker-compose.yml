@@ -51,6 +51,7 @@ services:
       OFFSET_MIRROR: ${OFFSET_MIRROR:-false}
       ENABLE_DEDUPLICATION: ${ENABLE_DEDUPLICATION:-false}
       DEBUG_SAVE_ALL_RECORDS: ${DEBUG_SAVE_ALL_RECORDS:-false}
+      MAX_WORKERS: ${MAX_WORKERS:-4}
       LOG_LEVEL: debug
     networks:
       - internal

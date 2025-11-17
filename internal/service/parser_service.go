@@ -387,7 +387,7 @@ func (s *ParserService) runTechLogTailer(ctx context.Context, dir string) {
 		filesProcessed = uint32(len(allFiles))
 	}
 	
-	tailer := techlog.NewTailer(dir, isJSON, s.offsetStore)
+	tailer := techlog.NewTailer(dir, isJSON, s.offsetStore, s.cfg.MaxWorkers)
 
 	// Set callback to flush pending batches after historical files processing completes
 	tailer.SetHistoricalCompleteCallback(func() {
