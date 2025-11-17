@@ -24,6 +24,8 @@ type Config struct {
 	OffsetMirror        bool // Mirror offset storage to ClickHouse
 	EnableDeduplication bool // Enable deduplication check (slower but prevents duplicates)
 	MaxWorkers          int  // Max parallel workers for file processing (default: 4)
+	BatchSize           int  // Batch size for ClickHouse inserts (default: 5000)
+	BatchFlushTimeout   int  // Batch flush timeout in milliseconds (default: 1000)
 
 	// MCP settings
 	MCPPort       int
@@ -53,6 +55,8 @@ func Load() (*Config, error) {
 		OffsetMirror:        getEnvBool("OFFSET_MIRROR", false),
 		EnableDeduplication: getEnvBool("ENABLE_DEDUPLICATION", false),
 		MaxWorkers:          getEnvInt("MAX_WORKERS", 4),
+		BatchSize:           getEnvInt("BATCH_SIZE", 5000),
+		BatchFlushTimeout:   getEnvInt("BATCH_FLUSH_TIMEOUT", 1000),
 
 		MCPPort:       getEnvInt("MCP_PORT", 8080),
 		ClusterMapPath: getEnv("CLUSTER_MAP_PATH", "configs/cluster_map.yaml"),

@@ -63,8 +63,8 @@ func NewParserService(cfg *config.Config) (*ParserService, error) {
 		}
 
 		batchWriter = writer.NewClickHouseWriter(conn, writer.BatchConfig{
-			MaxSize:            500,
-			FlushTimeout:       100, // 100ms
+			MaxSize:            cfg.BatchSize,
+			FlushTimeout:       int64(cfg.BatchFlushTimeout),
 			EnableDeduplication: cfg.EnableDeduplication,
 		})
 	}
