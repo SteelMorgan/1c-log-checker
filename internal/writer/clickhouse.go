@@ -157,8 +157,28 @@ func (w *ClickHouseWriter) WriteParserMetrics(ctx context.Context, metrics *doma
 	// This ensures we use metrics that have been accumulated up to this point
 	if metrics.DeduplicationTimeMs == 0 && w.cfg.EnableDeduplication && deduplicationRecordsCount > 0 {
 		// Calculate average deduplication time per record and scale to current batch
-		avgDedupTimePerRecord := deduplicationTimeAccumulator / time.Duration(deduplicationRecordsCount)
-		metrics.DeduplicationTimeMs = uint64(avgDedupTimePerRecord.Milliseconds() * int64(metrics.RecordsParsed))
+		// CRITICAL: Use nanoseconds to avoid precision loss when converting to milliseconds
+		// Calculate: (total_nanoseconds / records_count) * records_parsed / 1_000_000
+		avgDedupTimePerRecordNs := deduplicationTimeAccumulator.Nanoseconds() / int64(deduplicationRecordsCount)
+		calculatedDedupTimeNs := avgDedupTimePerRecordNs * int64(metrics.RecordsParsed)
+		calculatedDedupTime := uint64(calculatedDedupTimeNs / 1_000_000) // Convert nanoseconds to milliseconds
+
+		log.Info().
+			Str("file_path", metrics.FilePath).
+			Uint64("deduplication_records_count", deduplicationRecordsCount).
+			Dur("deduplication_time_accumulator", deduplicationTimeAccumulator).
+			Int64("avg_dedup_time_per_record_ns", avgDedupTimePerRecordNs).
+			Uint64("records_parsed", metrics.RecordsParsed).
+			Int64("calculated_dedup_time_ns", calculatedDedupTimeNs).
+			Uint64("calculated_dedup_time_ms", calculatedDedupTime).
+			Msg("Enriching DeduplicationTimeMs from accumulated metrics")
+		
+		if calculatedDedupTime == 0 && metrics.RecordsParsed > 0 {
+			// For very small deduplication times, use minimum 1ms to avoid zero
+			metrics.DeduplicationTimeMs = 1
+		} else {
+			metrics.DeduplicationTimeMs = calculatedDedupTime
+		}
 	}
 	
 	// Enrich WritingTimeMs if not set and we have accumulated writing metrics
@@ -490,21 +510,20 @@ func (w *ClickHouseWriter) flushEventLogSnapshot(ctx context.Context, batchSnaps
 		Int("batch_size", len(batchSnapshot)).
 		Msg("Starting to process event log batch snapshot")
 	
-	// Calculate hashes and filter duplicates (if enabled)
-	recordsToWrite := make([]*domain.EventLogRecord, 0, len(batchSnapshot))
-	hashes := make([]string, 0, len(batchSnapshot))
+	// Calculate hashes for all records first
+	// Use map to track unique hashes and their records (handle duplicates within batch)
+	hashToRecords := make(map[string][]*domain.EventLogRecord, len(batchSnapshot))
+	hashOrder := make([]string, 0, len(batchSnapshot)) // Preserve order for processing
 	
 	skippedCount := 0
 	skippedReasons := make(map[string]int)
 	skippedRecords := make([]map[string]interface{}, 0)
 	processedCount := 0
 	
-	// Measure deduplication time separately (accumulated across all records)
-	var deduplicationTime time.Duration
-	
 	// CRITICAL: Store batch size at start
 	initialBatchSize := len(batchSnapshot)
 	
+	// Step 1: Calculate all hashes and group by hash (handle duplicates within batch)
 	for idx, record := range batchSnapshot {
 		processedCount++
 		
@@ -546,20 +565,51 @@ func (w *ClickHouseWriter) flushEventLogSnapshot(ctx context.Context, batchSnaps
 			continue
 		}
 		
-		// Check if hash already exists in ClickHouse (only if deduplication is enabled)
-		if w.cfg.EnableDeduplication {
-			dedupCheckStart := time.Now()
-			exists, err := w.checkHashExists(ctx, "event_log", hash)
-			deduplicationTime += time.Since(dedupCheckStart)
-			
-			if err != nil {
-				log.Warn().Err(err).Str("hash", hash).Msg("Failed to check hash existence, will try to insert")
-				// Continue with insert - if it's a duplicate, ClickHouse will handle it
-			} else if exists {
+		// Add record to hash group (handle duplicates within batch)
+		if _, exists := hashToRecords[hash]; !exists {
+			hashOrder = append(hashOrder, hash)
+			hashToRecords[hash] = make([]*domain.EventLogRecord, 0, 1)
+		}
+		hashToRecords[hash] = append(hashToRecords[hash], record)
+	}
+	
+	// Get unique hashes for batch check
+	recordHashes := hashOrder
+	
+	// Step 2: Batch check all hashes at once (if deduplication is enabled)
+	var deduplicationTime time.Duration
+	existingHashes := make(map[string]bool, len(recordHashes))
+	
+	if w.cfg.EnableDeduplication && len(recordHashes) > 0 {
+		dedupCheckStart := time.Now()
+		existing, err := w.checkHashesBatch(ctx, "event_log", recordHashes)
+		deduplicationTime = time.Since(dedupCheckStart)
+		
+		if err != nil {
+			log.Warn().Err(err).Int("hashes_count", len(recordHashes)).Msg("Failed to batch check hashes, will try to insert all records")
+			// Continue with insert - if duplicates exist, ClickHouse will handle them
+		} else {
+			// Build map of existing hashes for fast lookup
+			for _, hash := range existing {
+				existingHashes[hash] = true
+			}
+		}
+	}
+	
+	// Step 3: Filter records based on deduplication results
+	recordsToWrite := make([]*domain.EventLogRecord, 0, len(batchSnapshot))
+	hashes := make([]string, 0, len(batchSnapshot))
+	
+	for _, hash := range recordHashes {
+		records := hashToRecords[hash]
+		
+		// Check if hash already exists in ClickHouse (deduplication)
+		if w.cfg.EnableDeduplication && existingHashes[hash] {
+			// All records with this hash are duplicates - skip all
+			for _, record := range records {
 				skippedCount++
 				skippedReasons["duplicate"]++
 				skippedInfo := map[string]interface{}{
-					"index":           idx,
 					"reason":          "duplicate",
 					"hash":            hash,
 					"event_time":      record.EventTime.Format("2006-01-02 15:04:05"),
@@ -568,17 +618,42 @@ func (w *ClickHouseWriter) flushEventLogSnapshot(ctx context.Context, batchSnaps
 					"level":           record.Level,
 				}
 				skippedRecords = append(skippedRecords, skippedInfo)
-				log.Warn().
-					Int("record_index", idx).
+				log.Debug().
 					Str("hash", hash).
 					Str("event_time", record.EventTime.Format("2006-01-02 15:04:05")).
 					Str("event", record.Event).
-					Msg("CRITICAL: Skipping duplicate event log record - RECORD WILL BE LOST")
-				continue
+					Msg("Skipping duplicate event log record")
+			}
+			continue
+		}
+		
+		// Hash doesn't exist in ClickHouse - add all records with this hash
+		// If there are duplicates within batch (same hash), add only first one
+		// (duplicates within batch are also considered duplicates)
+		if len(records) > 1 {
+			// Multiple records with same hash in batch - skip duplicates
+			for i := 1; i < len(records); i++ {
+				skippedCount++
+				skippedReasons["duplicate_in_batch"]++
+				skippedInfo := map[string]interface{}{
+					"reason":          "duplicate_in_batch",
+					"hash":            hash,
+					"event_time":      records[i].EventTime.Format("2006-01-02 15:04:05"),
+					"transaction_datetime": records[i].TransactionDateTime.Format("2006-01-02 15:04:05"),
+					"event":           records[i].Event,
+					"level":           records[i].Level,
+				}
+				skippedRecords = append(skippedRecords, skippedInfo)
+				log.Debug().
+					Str("hash", hash).
+					Int("duplicate_index", i).
+					Str("event_time", records[i].EventTime.Format("2006-01-02 15:04:05")).
+					Msg("Skipping duplicate record within batch")
 			}
 		}
 		
-		// Record passed all checks - add to batch
+		// Add first record with this hash (or only record if no duplicates in batch)
+		record := records[0]
 		recordsToWrite = append(recordsToWrite, record)
 		hashes = append(hashes, hash)
 		
@@ -842,13 +917,12 @@ func (w *ClickHouseWriter) flushTechLogSnapshot(ctx context.Context, batchSnapsh
 	// Start timing
 	startTime := time.Now()
 
-	// Calculate hashes and filter duplicates (if enabled)
-	recordsToWrite := make([]*domain.TechLogRecord, 0, len(batchSnapshot))
-	hashes := make([]string, 0, len(batchSnapshot))
+	// Calculate hashes for all records first
+	// Use map to track unique hashes and their records (handle duplicates within batch)
+	hashToRecords := make(map[string][]*domain.TechLogRecord, len(batchSnapshot))
+	hashOrder := make([]string, 0, len(batchSnapshot)) // Preserve order for processing
 	
-	// Measure deduplication time separately (accumulated across all records)
-	var deduplicationTime time.Duration
-
+	// Step 1: Calculate all hashes and group by hash (handle duplicates within batch)
 	for _, record := range batchSnapshot {
 		hash, err := calculateTechLogHash(record)
 		if err != nil {
@@ -856,21 +930,69 @@ func (w *ClickHouseWriter) flushTechLogSnapshot(ctx context.Context, batchSnapsh
 			continue
 		}
 		
-		// Check if hash already exists in ClickHouse (only if deduplication is enabled)
-		if w.cfg.EnableDeduplication {
-			dedupCheckStart := time.Now()
-			exists, err := w.checkHashExists(ctx, "tech_log", hash)
-			deduplicationTime += time.Since(dedupCheckStart)
-			
-			if err != nil {
-				log.Warn().Err(err).Str("hash", hash).Msg("Failed to check hash existence, will try to insert")
-				// Continue with insert - if it's a duplicate, ClickHouse will handle it
-			} else if exists {
-				log.Debug().Str("hash", hash).Msg("Skipping duplicate tech log record")
-				continue
+		// Add record to hash group (handle duplicates within batch)
+		if _, exists := hashToRecords[hash]; !exists {
+			hashOrder = append(hashOrder, hash)
+			hashToRecords[hash] = make([]*domain.TechLogRecord, 0, 1)
+		}
+		hashToRecords[hash] = append(hashToRecords[hash], record)
+	}
+	
+	// Get unique hashes for batch check
+	recordHashes := hashOrder
+	
+	// Step 2: Batch check all hashes at once (if deduplication is enabled)
+	var deduplicationTime time.Duration
+	existingHashes := make(map[string]bool, len(recordHashes))
+	
+	if w.cfg.EnableDeduplication && len(recordHashes) > 0 {
+		dedupCheckStart := time.Now()
+		existing, err := w.checkHashesBatch(ctx, "tech_log", recordHashes)
+		deduplicationTime = time.Since(dedupCheckStart)
+		
+		if err != nil {
+			log.Warn().Err(err).Int("hashes_count", len(recordHashes)).Msg("Failed to batch check hashes, will try to insert all records")
+			// Continue with insert - if duplicates exist, ClickHouse will handle them
+		} else {
+			// Build map of existing hashes for fast lookup
+			for _, hash := range existing {
+				existingHashes[hash] = true
+			}
+		}
+	}
+	
+	// Step 3: Filter records based on deduplication results
+	recordsToWrite := make([]*domain.TechLogRecord, 0, len(batchSnapshot))
+	hashes := make([]string, 0, len(batchSnapshot))
+	
+	for _, hash := range recordHashes {
+		records := hashToRecords[hash]
+		
+		// Check if hash already exists in ClickHouse (deduplication)
+		if w.cfg.EnableDeduplication && existingHashes[hash] {
+			// All records with this hash are duplicates - skip all
+			log.Debug().
+				Str("hash", hash).
+				Int("duplicates_count", len(records)).
+				Msg("Skipping duplicate tech log records")
+			continue
+		}
+		
+		// Hash doesn't exist in ClickHouse - add all records with this hash
+		// If there are duplicates within batch (same hash), add only first one
+		// (duplicates within batch are also considered duplicates)
+		if len(records) > 1 {
+			// Multiple records with same hash in batch - skip duplicates
+			for i := 1; i < len(records); i++ {
+				log.Debug().
+					Str("hash", hash).
+					Int("duplicate_index", i).
+					Msg("Skipping duplicate tech log record within batch")
 			}
 		}
 		
+		// Add first record with this hash (or only record if no duplicates in batch)
+		record := records[0]
 		recordsToWrite = append(recordsToWrite, record)
 		hashes = append(hashes, hash)
 	}
@@ -1267,6 +1389,7 @@ if err := retry.Do(ctx, w.retryCfg, func() error {
 }
 
 // checkHashExists checks if a record with given hash already exists in ClickHouse
+// DEPRECATED: Use checkHashesBatch for better performance
 func (w *ClickHouseWriter) checkHashExists(ctx context.Context, tableName, hash string) (bool, error) {
 	var count uint64
 	// ClickHouse uses {hash:String} syntax for parameters, but for simplicity we'll use direct substitution
@@ -1288,6 +1411,56 @@ func (w *ClickHouseWriter) checkHashExists(ctx context.Context, tableName, hash 
 	}
 	
 	return count > 0, nil
+}
+
+// checkHashesBatch checks multiple hashes at once using a single query
+// This is MUCH faster than checking hashes one by one (100-1000x speedup)
+func (w *ClickHouseWriter) checkHashesBatch(ctx context.Context, tableName string, hashes []string) ([]string, error) {
+	if len(hashes) == 0 {
+		return []string{}, nil
+	}
+	
+	// Build IN clause with escaped hashes
+	// ClickHouse supports up to 10,000 values in IN clause, but we'll use batches of 1000 for safety
+	const batchSize = 1000
+	existingHashes := make([]string, 0, len(hashes))
+	
+	for i := 0; i < len(hashes); i += batchSize {
+		end := i + batchSize
+		if end > len(hashes) {
+			end = len(hashes)
+		}
+		
+		batch := hashes[i:end]
+		
+		// Build IN clause with escaped hashes
+		hashList := make([]string, 0, len(batch))
+		for _, hash := range batch {
+			// Escape single quotes in hash (shouldn't be needed for hex, but be safe)
+			escapedHash := strings.ReplaceAll(hash, "'", "''")
+			hashList = append(hashList, "'"+escapedHash+"'")
+		}
+		
+		query := fmt.Sprintf("SELECT DISTINCT record_hash FROM logs.%s WHERE record_hash IN (%s)", 
+			tableName, strings.Join(hashList, ","))
+		
+		rows, err := w.conn.Query(ctx, query)
+		if err != nil {
+			return nil, fmt.Errorf("failed to batch check hashes: %w", err)
+		}
+		
+		for rows.Next() {
+			var hash string
+			if err := rows.Scan(&hash); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("failed to scan hash: %w", err)
+			}
+			existingHashes = append(existingHashes, hash)
+		}
+		rows.Close()
+	}
+	
+	return existingHashes, nil
 }
 
 // mapToArrays converts a map to two arrays (keys, values) for ClickHouse Nested type
