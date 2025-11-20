@@ -2,7 +2,7 @@
 
 Сервис для парсинга журналов регистрации и технологического журнала 1С:Предприятие с загрузкой в ClickHouse для визуализации в Grafana и предоставления данных AI-агентам через MCP.
 
-**Версия:** 0.1.0 (В разработке)  
+**Версия:** 1.0.0 (В разработке)  
 **Методология:** Kiro
 
 ---
@@ -43,12 +43,6 @@
 
 См. подробнее: [docs/changelog/lgp-parser-enhancement.md](docs/changelog/lgp-parser-enhancement.md)
 
-### Целевые показатели
-
-- Обработка до **10 ГБ/час** технологического журнала
-- Задержка от записи в лог до доступности **<1 секунды**
-- Сохранение **всех полей** технологического журнала без потерь
-
 ---
 
 ## Возможности
@@ -66,10 +60,10 @@
 - ✅ Обработка ротации и сжатия (zip)
 
 ### ClickHouse
-- ✅ Таблицы: `event_log`, `tech_log`, `log_offsets`
+- ✅ Таблицы: `event_log`, `tech_log`
 - ✅ Партиционирование по дням
 - ✅ Настраиваемый TTL (по умолчанию 30 дней)
-- ✅ Материализованное представление для новых ошибок
+- ✅ `mv_new_errors` - сводка по всем ошибкам за последние 48 часов
 
 ### Grafana
 - ✅ Dashboard: Общая активность
@@ -185,7 +179,14 @@ ConfLocation=D:\ProjectCatalog\configs\techlog\
 
 ### 3. Настройка GUID-маппинга
 
-В корень каждого проекта поместите файл `cluster_map.yaml`. Образец тут: `configs/cluster_map.yaml`. Это необходимо, что бы агент знал гуид базы/кластера с которыми работает в проекте и мог обращаться за логами конкретной базы.
+**⚠️ ОБЯЗАТЕЛЬНО:** Для работы сервиса требуется создать папку `configs` в корне проекта (если её нет) и разместить там файл `cluster_map.yaml`. Образец файла находится в `configs/cluster_map.yaml.example`. Подсказка агенту куда смотреть в описании инструментов.
+
+Это необходимо, чтобы агент знал GUID базы/кластера, с которыми работает в проекте, и мог обращаться за логами конкретной базы.
+
+**Шаги:**
+1. Создайте папку `configs` в корне проекта (если её нет)
+2. Скопируйте образец: `configs/cluster_map.yaml.example` → `configs/cluster_map.yaml`
+3. Отредактируйте `configs/cluster_map.yaml` и укажите реальные GUID ваших кластеров и баз
 
 ```yaml
 clusters:
@@ -210,7 +211,7 @@ docker-compose up -d
 ### 5. Проверка
 
 - **ClickHouse:** http://localhost:8123/play
-- **Grafana:** http://localhost:3000 (без авторизации)
+- **Grafana:** http://localhost:3000 (без авторизации, если хотите - можно настроить, попросите агента)
 - **MCP Server:** http://localhost:8080
 
 ---
@@ -228,58 +229,34 @@ docker-compose up -d
 | `CLICKHOUSE_DB` | База данных ClickHouse | `logs` |
 | `LOG_RETENTION_DAYS` | Срок хранения логов (дни) | `30` |
 | `READ_ONLY` | Технический режим (только чтение, без записи в CH) | `false` |
-| `OFFSET_MIRROR` | Зеркалирование offset в ClickHouse | `false` |
 | `MCP_PORT` | Порт MCP-сервера | `8080` |
-| `LOG_LEVEL` | Уровень логирования (debug/info/warn/error) | `info` |
+| `MAX_WORKERS` | Количество параллельных поток парсинга | 4
+| `LOG_LEVEL` | Уровень логирования: `debug` = дебаг-файл (`/logs/parser_all_records.jsonl`), `info`/`warn`/`error` = логи сервиса в файл (`/logs/parser.log`, `/logs/mcp.log`) | `error` |
+| `NEW_ERRORS_UPDATE_INTERVAL` | Интервал обновления таблицы mv_new_errors (минуты) | `10` |
+| `NEW_ERRORS_HOURS` | Временное окно для анализа ошибок (часы) | `48` |
+
+В принципе ключевые переменные указаны в разделе "Быстрый старТ".
 
 ### Файлы конфигурации
 
 - **`deploy/docker/.env`** — переменные окружения (скопируйте из `deploy/docker/.env.example`)
-- **`cluster_map.yaml`** — маппинг GUID → имена кластеров/баз (размещается в корне проекта, образец в `configs/cluster_map.yaml`)
+- **`configs/cluster_map.yaml`** — маппинг GUID → имена кластеров/баз (размещается в папке `configs` в корне проекта, образец в `configs/cluster_map.yaml.example`)
 - **`deploy/docker/docker-compose.yml`** — конфигурация Docker Compose
 
 ---
 
 ## Использование
 
-### Просмотр логов парсера
+### Просмотр данных парсера
 
-```powershell
-docker logs -f 1c-log-parser
-```
+Человеками - через интерфейс Кликхауса или Графану (смотрите локальные порты в докере или в настройках)
+Агентам LLM - через MCP. 
+Для агента "в комплекте" идет навык https://github.com/SteelMorgan/cursor-anthropic-skills/tree/main/custom-skills/TECHLOG_SKILL.md
+  - объясняет агенту workflow для ТЖ
+  - ключевые знания по работе с ТЖ
 
-### Просмотр логов MCP-сервера
+Навык можно использовать в рамках проекта https://github.com/SteelMorgan/cursor-anthropic-skills/ (проект обеспечивает подхватывание навыка агентом самостоятельно), а можно забрать к себе и, например, разместить в проектных правилах. Навыки в формате антропика, поэтому для Claude тоже подойдут.
 
-```powershell
-docker logs -f 1c-log-mcp
-```
-
-### Запросы к ClickHouse
-
-```sql
--- Последние 100 событий журнала регистрации
-SELECT event_time, level, event, user, comment
-FROM logs.event_log
-ORDER BY event_time DESC
-LIMIT 100;
-
--- Топ-10 ошибок технологического журнала
-SELECT name, count() as cnt
-FROM logs.tech_log
-WHERE level = 'ERROR'
-GROUP BY name
-ORDER BY cnt DESC
-LIMIT 10;
-
--- Новые ошибки за сегодня
-SELECT * FROM logs.mv_new_errors
-WHERE error_date = today()
-  AND error_signature NOT IN (
-      SELECT DISTINCT error_signature
-      FROM logs.mv_new_errors
-      WHERE error_date = today() - 1
-  );
-```
 
 ### Использование MCP tools
 
@@ -291,65 +268,20 @@ WHERE error_date = today()
 
 - **[Спецификация](docs/specs/log-service.spec.md)** — полная спека проекта (Requirements/Design/Tasks)
 - **[Исходный запрос](docs/specs/user-request.md)** — детальное описание требований
-- **[Процесс работы со спекой](docs/specs/workflow-process.md)** — методология Киры
-- **[Чек-лист Киры](docs/specs/kiro-checklist.md)** — контроль качества процесса
 - **[Получение GUIDов](docs/guides/get-guids.md)** — как узнать GUID кластера/базы
 - **[Настройка logcfg.xml](docs/techlog/logcfg.md)** — конфигурация технологического журнала
 - **[Использование MCP tools](docs/mcp/usage.md)** — примеры запросов, режимы, best practices
 
 ---
 
-## Разработка
-
-### Сборка
-
-```powershell
-# Парсер
-go build -o bin/parser.exe ./cmd/parser
-
-# MCP-сервер
-go build -o bin/mcp.exe ./cmd/mcp
-```
-
-### Тесты
-
-```powershell
-go test ./...
-```
-
-### Линтинг
-
-```powershell
-golangci-lint run
-```
-
-### Docker-образы
-
-```powershell
-# Парсер
-docker build -f deploy/docker/Dockerfile.parser -t 1c-log-parser:latest .
-
-# MCP
-docker build -f deploy/docker/Dockerfile.mcp -t 1c-log-mcp:latest .
-```
-
----
-
 ## TODO
 
-### Расширение функциональности:
-- [ ] Поддержка чтения архивов `.lgd` (SQLite формат)
-- [ ] Поддержка XML выгрузок журнала регистрации
-- [ ] Внешняя обработка 1С для получения GUIDов
-- [ ] Prometheus метрики и alerting
-- [ ] Circuit breakers для ClickHouse
-
 ### Навыки и база знаний:
-- [ ] Создать навык "Технологический журнал 1С" (40+ событий, примеры, best practices)
-- [ ] Создать базу знаний "MS SQL/PostgreSQL в контексте 1С" (блокировки, RCSI, оптимизация)
+- [ ] Добавить работу с логами PostgreSQL
+- [ ] Добавить работу с логами MS SQL
+- [ ] Создать навык для работы с "MS SQL/PostgreSQL в контексте 1С" (блокировки, RCSI, оптимизация)
 
 См. подробнее:
-- [TODO: Навык техжурнала](docs/guides/TODO_techlog_skill.md)
 - [TODO: База знаний SQL](docs/guides/TODO_sql_knowledge_base.md)
 
 ---
@@ -360,7 +292,7 @@ docker build -f deploy/docker/Dockerfile.mcp -t 1c-log-mcp:latest .
 
 ---
 
-**Версия:** 0.1.0  
-**Статус:** В разработке (этап spec/design)  
+**Версия:** 0.8.0  
+**Статус:** Альфа-версия (этап spec/design)  
 **Последнее обновление:** 2025-11-13
 

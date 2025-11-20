@@ -132,3 +132,132 @@ func GetClusterGUIDForReg(regDir string) (string, error) {
 	return info.GUID, nil
 }
 
+// FindRegDirByClusterGUID searches for reg_<port> directory that contains the given cluster_guid
+// Searches in standard locations: C:\Program Files\1cv8\srvinfo\reg_*
+// and in provided searchDirs (e.g., from LogDirs config)
+func FindRegDirByClusterGUID(clusterGUID string, searchDirs []string) (string, error) {
+	// Normalize cluster_guid to lowercase for comparison
+	clusterGUIDLower := strings.ToLower(clusterGUID)
+	
+	// Standard srvinfo location
+	standardSrvinfo := `C:\Program Files\1cv8\srvinfo`
+	
+	// Combine standard location with searchDirs
+	searchPaths := []string{standardSrvinfo}
+	for _, dir := range searchDirs {
+		// Extract srvinfo path from LogDirs (if it's a path to event_log, extract parent)
+		// For example: C:\Program Files\1cv8\srvinfo\reg_1541\... -> C:\Program Files\1cv8\srvinfo
+		normalized := filepath.ToSlash(dir)
+		if strings.Contains(normalized, "/srvinfo/") {
+			parts := strings.Split(normalized, "/srvinfo/")
+			if len(parts) > 0 {
+				srvinfoPath := parts[0] + "/srvinfo"
+				searchPaths = append(searchPaths, filepath.FromSlash(srvinfoPath))
+			}
+		} else if strings.Contains(normalized, "\\srvinfo\\") {
+			parts := strings.Split(normalized, "\\srvinfo\\")
+			if len(parts) > 0 {
+				srvinfoPath := parts[0] + "\\srvinfo"
+				searchPaths = append(searchPaths, srvinfoPath)
+			}
+		}
+	}
+	
+	// Remove duplicates
+	uniquePaths := make(map[string]bool)
+	var uniqueSearchPaths []string
+	for _, path := range searchPaths {
+		if !uniquePaths[path] {
+			uniquePaths[path] = true
+			uniqueSearchPaths = append(uniqueSearchPaths, path)
+		}
+	}
+	
+	// Search in each srvinfo directory
+	for _, srvinfoPath := range uniqueSearchPaths {
+		if _, err := os.Stat(srvinfoPath); os.IsNotExist(err) {
+			continue // Skip if directory doesn't exist
+		}
+		
+		// Look for reg_* directories
+		entries, err := os.ReadDir(srvinfoPath)
+		if err != nil {
+			log.Debug().Err(err).Str("path", srvinfoPath).Msg("Failed to read srvinfo directory")
+			continue
+		}
+		
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			
+			regName := strings.ToLower(entry.Name())
+			if !strings.HasPrefix(regName, "reg_") {
+				continue
+			}
+			
+			regDir := filepath.Join(srvinfoPath, entry.Name())
+			
+			// Try to read cluster GUID from this reg_<port> directory
+			regClusterGUID, err := GetClusterGUIDForReg(regDir)
+			if err != nil {
+				log.Debug().Err(err).Str("reg_dir", regDir).Msg("Failed to read cluster GUID from reg directory")
+				continue
+			}
+			
+			// Compare GUIDs (case-insensitive)
+			if strings.ToLower(regClusterGUID) == clusterGUIDLower {
+				log.Debug().
+					Str("cluster_guid", clusterGUID).
+					Str("reg_dir", regDir).
+					Msg("Found reg directory for cluster GUID")
+				return regDir, nil
+			}
+		}
+	}
+	
+	return "", fmt.Errorf("reg_<port> directory not found for cluster_guid: %s", clusterGUID)
+}
+
+// GetClusterAndInfobaseNames reads cluster_name and infobase_name from 1CV8Clst.lst
+// by searching for reg_<port> directory that contains the given cluster_guid
+func GetClusterAndInfobaseNames(clusterGUID, infobaseGUID string, searchDirs []string) (clusterName, infobaseName string, err error) {
+	// Find reg_<port> directory for this cluster_guid
+	regDir, err := FindRegDirByClusterGUID(clusterGUID, searchDirs)
+	if err != nil {
+		log.Debug().
+			Err(err).
+			Str("cluster_guid", clusterGUID).
+			Msg("Failed to find reg directory, cluster and infobase names will be empty")
+		return "", "", nil // Return empty strings, not error (graceful degradation)
+	}
+	
+	// Read cluster file data
+	clusterFileData, err := ReadClusterFileData(regDir)
+	if err != nil {
+		log.Debug().
+			Err(err).
+			Str("reg_dir", regDir).
+			Msg("Failed to read cluster file data, cluster and infobase names will be empty")
+		return "", "", nil // Return empty strings, not error (graceful degradation)
+	}
+	
+	clusterName = clusterFileData.Cluster.Name
+	
+	// Try to get infobase name
+	if infobase, ok := clusterFileData.Infobases[infobaseGUID]; ok {
+		infobaseName = infobase.Name
+		log.Debug().
+			Str("cluster_guid", clusterGUID).
+			Str("cluster_name", clusterName).
+			Str("infobase_guid", infobaseGUID).
+			Str("infobase_name", infobaseName).
+			Msg("Found cluster and infobase names from 1CV8Clst.lst")
+	} else {
+		log.Debug().
+			Str("infobase_guid", infobaseGUID).
+			Msg("Infobase GUID not found in 1CV8Clst.lst, infobase name will be empty")
+	}
+	
+	return clusterName, infobaseName, nil
+}

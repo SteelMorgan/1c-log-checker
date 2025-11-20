@@ -21,28 +21,33 @@ type Config struct {
 	// Parser settings
 	LogRetentionDays    int  // TTL in days
 	ReadOnly            bool // Technical mode: read logs but don't write to ClickHouse
-	OffsetMirror        bool // Mirror offset storage to ClickHouse
 	EnableDeduplication bool // Enable deduplication check (slower but prevents duplicates)
 	MaxWorkers          int  // Max parallel workers for file processing (default: 4)
 	BatchSize           int  // Batch size for ClickHouse inserts (default: 5000)
 	BatchFlushTimeout   int  // Batch flush timeout in milliseconds (default: 1000)
+	
+	// New errors aggregation worker settings
+	NewErrorsUpdateInterval int // Update interval in minutes (default: 10)
+	NewErrorsHours          int // Time window for error analysis in hours (default: 48)
 
 	// MCP settings
 	MCPPort       int
 	ClusterMapPath string // Path to cluster_map.yaml (used only by MCP server, not parser)
 	TechLogConfigDir string // Directory for logcfg.xml file (mounted from host)
 
-	// GUID Enrichment (GUID → Presentation)
-	// MCP-server initiated: collects unknown GUIDs and requests 1C for presentations
-	EnrichmentEnabled  bool   // Enable enrichment worker
-	EnrichmentEndpoint string // 1C HTTP endpoint (e.g., "http://1c-server:8080")
-	EnrichmentAPIKey   string // API key for authentication
-	EnrichmentBatchSize int   // Max GUIDs per request (default: 500)
-	EnrichmentInterval int    // Worker interval in minutes (default: 10)
+	// Retry settings
+	RetryMaxAttempts  int // Maximum retry attempts (default: 3)
+	RetryInitialDelay  int // Initial retry delay in milliseconds (default: 100)
+	RetryMaxDelay      int // Maximum retry delay in milliseconds (default: 5000)
+	RetryMultiplier    float64 // Exponential backoff multiplier (default: 2.0)
 
 	// Observability
-	LogLevel       string
+	LogLevel       string // debug = debug file, info/warn/error = service logs to file (default: error)
 	TracingEnabled bool
+	OTLPEndpoint   string // OTLP endpoint (e.g., "localhost:4317" for gRPC, "http://localhost:4318" for HTTP)
+	OTLPProtocol   string // "grpc" or "http" (default: "grpc")
+	ServiceName    string // Service name for OpenTelemetry (default: "1c-log-checker")
+	ServiceVersion string // Service version (default: "0.1.0")
 
 	// Internal (computed)
 	IsInDocker bool // Auto-detected based on CLICKHOUSE_HOST
@@ -60,24 +65,29 @@ func Load() (*Config, error) {
 
 		LogRetentionDays:    getEnvInt("LOG_RETENTION_DAYS", 30),
 		ReadOnly:            getEnvBool("READ_ONLY", false),
-		OffsetMirror:        getEnvBool("OFFSET_MIRROR", false),
 		EnableDeduplication: getEnvBool("ENABLE_DEDUPLICATION", false),
 		MaxWorkers:          getEnvInt("MAX_WORKERS", 4),
 		BatchSize:           getEnvInt("BATCH_SIZE", 5000),
 		BatchFlushTimeout:   getEnvInt("BATCH_FLUSH_TIMEOUT", 1000),
+		
+		NewErrorsUpdateInterval: getEnvInt("NEW_ERRORS_UPDATE_INTERVAL", 10), // minutes
+		NewErrorsHours:          getEnvInt("NEW_ERRORS_HOURS", 48),            // hours
 
 		MCPPort:       getEnvInt("MCP_PORT", 8080),
 		ClusterMapPath: getEnv("CLUSTER_MAP_PATH", "configs/cluster_map.yaml"),
 		TechLogConfigDir: getEnv("TECHLOG_CONFIG_DIR", "/app/configs/techlog"), // Default inside container
 
-		EnrichmentEnabled:  getEnvBool("ENRICHMENT_ENABLED", false),
-		EnrichmentEndpoint: getEnv("ENRICHMENT_ENDPOINT", ""),
-		EnrichmentAPIKey:   getEnv("ENRICHMENT_API_KEY", ""),
-		EnrichmentBatchSize: getEnvInt("ENRICHMENT_BATCH_SIZE", 500),
-		EnrichmentInterval: getEnvInt("ENRICHMENT_INTERVAL", 10), // minutes
+		RetryMaxAttempts: getEnvInt("RETRY_MAX_ATTEMPTS", 3),
+		RetryInitialDelay: getEnvInt("RETRY_INITIAL_DELAY", 100), // milliseconds
+		RetryMaxDelay: getEnvInt("RETRY_MAX_DELAY", 5000), // milliseconds
+		RetryMultiplier: getEnvFloat("RETRY_MULTIPLIER", 2.0),
 
-		LogLevel:       getEnv("LOG_LEVEL", "info"),
+		LogLevel:       getEnv("LOG_LEVEL", "error"), // Default: error (logs to file enabled)
 		TracingEnabled: getEnvBool("TRACING_ENABLED", false),
+		OTLPEndpoint:   getEnv("OTLP_ENDPOINT", ""),
+		OTLPProtocol:   getEnv("OTLP_PROTOCOL", "grpc"),
+		ServiceName:    getEnv("SERVICE_NAME", "1c-log-checker"),
+		ServiceVersion: getEnv("SERVICE_VERSION", "0.1.0"),
 
 		IsInDocker: getEnv("CLICKHOUSE_HOST", "localhost") != "localhost",
 	}
@@ -136,6 +146,16 @@ func getEnvBool(key string, defaultValue bool) bool {
 	if value := os.Getenv(key); value != "" {
 		if boolValue, err := strconv.ParseBool(value); err == nil {
 			return boolValue
+		}
+	}
+	return defaultValue
+}
+
+// getEnvFloat gets a float environment variable or returns a default value
+func getEnvFloat(key string, defaultValue float64) float64 {
+	if value := os.Getenv(key); value != "" {
+		if floatValue, err := strconv.ParseFloat(value, 64); err == nil {
+			return floatValue
 		}
 	}
 	return defaultValue

@@ -17,6 +17,7 @@ import (
 	"github.com/1c-log-checker/internal/logreader"
 	"github.com/1c-log-checker/internal/logreader/eventlog"
 	"github.com/1c-log-checker/internal/offset"
+	"github.com/1c-log-checker/internal/retry"
 	"github.com/1c-log-checker/internal/techlog"
 	"github.com/1c-log-checker/internal/writer"
 	"github.com/rs/zerolog/log"
@@ -27,6 +28,7 @@ type ParserService struct {
 	cfg         *config.Config
 	offsetStore offset.OffsetStore
 	writer      writer.BatchWriter
+	chConn      clickhouse.Conn // ClickHouse connection for workers (nil if ReadOnly)
 	debugFile   *os.File // File for saving all parsed records
 	debugMutex  sync.Mutex
 	debugCount  int64    // Counter for records written to debug file
@@ -48,6 +50,7 @@ func NewParserService(cfg *config.Config) (*ParserService, error) {
 
 	// Connect to ClickHouse (if not in READ_ONLY mode)
 	var batchWriter writer.BatchWriter
+	var chConn clickhouse.Conn
 	if !cfg.ReadOnly {
 		conn, err := clickhouse.Open(&clickhouse.Options{
 			Addr: []string{fmt.Sprintf("%s:%d", cfg.ClickHouseHost, cfg.ClickHousePort)},
@@ -61,19 +64,28 @@ func NewParserService(cfg *config.Config) (*ParserService, error) {
 			offsetStore.Close()
 			return nil, fmt.Errorf("failed to connect to clickhouse: %w", err)
 		}
+		chConn = conn
 
-		batchWriter = writer.NewClickHouseWriter(conn, writer.BatchConfig{
+		// Create retry configuration from config
+		retryCfg := retry.Config{
+			MaxAttempts:  cfg.RetryMaxAttempts,
+			InitialDelay: time.Duration(cfg.RetryInitialDelay) * time.Millisecond,
+			MaxDelay:     time.Duration(cfg.RetryMaxDelay) * time.Millisecond,
+			Multiplier:   cfg.RetryMultiplier,
+			RetryableErrors: retry.DefaultConfig().RetryableErrors,
+		}
+		
+		batchWriter = writer.NewClickHouseWriterWithRetry(conn, writer.BatchConfig{
 			MaxSize:            cfg.BatchSize,
 			FlushTimeout:       int64(cfg.BatchFlushTimeout),
 			EnableDeduplication: cfg.EnableDeduplication,
-		})
+		}, retryCfg)
 	}
 
-	// Open debug file for saving all parsed records (only if enabled)
+	// Open debug file for saving all parsed records (only if LOG_LEVEL=debug)
 	var debugFile *os.File
-	debugEnabled := os.Getenv("DEBUG_SAVE_ALL_RECORDS")
-	if debugEnabled == "true" || debugEnabled == "1" {
-		debugFile, err = os.OpenFile("/app/debug/parser_all_records.jsonl", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if cfg.LogLevel == "debug" {
+		debugFile, err = os.OpenFile("/app/logs/parser_all_records.jsonl", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 		if err != nil {
 			log.Warn().Err(err).Msg("Failed to open debug file, records won't be saved")
 			debugFile = nil
@@ -82,14 +94,13 @@ func NewParserService(cfg *config.Config) (*ParserService, error) {
 				Str("file", "parser_all_records.jsonl").
 				Msg("Debug mode enabled: All parsed records will be saved")
 		}
-	} else {
-		log.Debug().Msg("Debug save disabled (DEBUG_SAVE_ALL_RECORDS not set)")
 	}
 
 	return &ParserService{
 		cfg:         cfg,
 		offsetStore: offsetStore,
 		writer:      batchWriter,
+		chConn:      chConn,
 		debugFile:   debugFile,
 	}, nil
 }
@@ -128,6 +139,17 @@ func (s *ParserService) Start(ctx context.Context) error {
 			defer s.wg.Done()
 			s.runTechLogTailer(ctx, directory)
 		}(dir)
+	}
+	
+	// Start new errors aggregation worker (if not in read-only mode)
+	if !s.cfg.ReadOnly && s.chConn != nil {
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			interval := time.Duration(s.cfg.NewErrorsUpdateInterval) * time.Minute
+			worker := NewNewErrorsWorker(s.chConn, interval, s.cfg.NewErrorsHours)
+			worker.Start(ctx)
+		}()
 	}
 	
 	log.Info().Msg("Parser service workers started")
@@ -258,8 +280,8 @@ func (s *ParserService) runEventLogReader(ctx context.Context, location logreade
 						Float64("records_per_second", recordsPerSec).
 						Msg("Parsing completed: All records processed and written to ClickHouse")
 
-					// Write performance metrics to ClickHouse
-					if !s.cfg.ReadOnly && s.writer != nil {
+					// Write performance metrics to ClickHouse (in READ_ONLY mode, writer may be nil)
+					if s.writer != nil {
 						metrics := &domain.ParserMetrics{
 							Timestamp:        time.Now(),
 							ParserType:       "event_log",
@@ -277,6 +299,12 @@ func (s *ParserService) runEventLogReader(ctx context.Context, location logreade
 						}
 						if err := s.writer.WriteParserMetrics(ctx, metrics); err != nil {
 							log.Error().Err(err).Msg("Failed to write parser metrics")
+						} else {
+							log.Info().
+								Str("parser_type", "event_log").
+								Uint32("files_processed", metrics.FilesProcessed).
+								Uint64("records_parsed", metrics.RecordsParsed).
+								Msg("Parser metrics written to ClickHouse (READ_ONLY mode)")
 						}
 					}
 					return
@@ -361,7 +389,72 @@ func (s *ParserService) runEventLogReader(ctx context.Context, location logreade
 
 // createDirectReader creates a direct file parsing reader
 func (s *ParserService) createDirectReader(location logreader.LogLocation, clusterName, infobaseName string) (logreader.EventLogReader, error) {
-	return eventlog.NewReader(location.BasePath, location.ClusterGUID, location.InfobaseGUID, clusterName, infobaseName, s.cfg.MaxWorkers)
+	// Create metrics callback if writer is available
+	// Note: We use context.Background() because metrics are written asynchronously during file parsing
+	// and we don't have access to the request context here
+	// Metrics are written to parser_metrics table with parser_type='event_log'
+	var metricsCallback eventlog.FileMetricsCallback
+	if s.writer != nil && !s.cfg.ReadOnly {
+		metricsCallback = func(metrics *domain.ParserMetrics) error {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			err := s.writer.WriteParserMetrics(ctx, metrics)
+			if err != nil {
+				log.Error().
+					Err(err).
+					Str("parser_type", metrics.ParserType).
+					Uint32("files_processed", metrics.FilesProcessed).
+					Uint64("records_parsed", metrics.RecordsParsed).
+					Msg("Failed to write event_log parser metrics via callback")
+			} else {
+				log.Debug().
+					Str("parser_type", metrics.ParserType).
+					Uint32("files_processed", metrics.FilesProcessed).
+					Uint64("records_parsed", metrics.RecordsParsed).
+					Float64("records_per_second", metrics.RecordsPerSecond).
+					Msg("Event_log parser metrics written via callback")
+			}
+			return err
+		}
+		log.Info().
+			Str("cluster_guid", location.ClusterGUID).
+			Str("infobase_guid", location.InfobaseGUID).
+			Msg("Event_log parser metrics callback enabled")
+	} else {
+		log.Info().
+			Bool("writer_nil", s.writer == nil).
+			Bool("read_only", s.cfg.ReadOnly).
+			Msg("Event_log parser metrics callback disabled")
+	}
+	
+	// Create progress callback if writer is available
+	// Progress is written to file_reading_progress table for monitoring
+	var progressCallback eventlog.FileProgressCallback
+	if s.writer != nil && !s.cfg.ReadOnly {
+		progressCallback = func(progress *domain.FileReadingProgress) error {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			err := s.writer.WriteFileReadingProgress(ctx, progress)
+			if err != nil {
+				log.Warn().
+					Err(err).
+					Str("file", progress.FileName).
+					Msg("Failed to write file reading progress")
+			}
+			return err
+		}
+	}
+	
+	// Create offset store adapter for event log
+	var eventLogOffsetStore eventlog.EventLogOffsetStore
+	if s.offsetStore != nil {
+		// Try to cast to BoltDBStore which implements EventLogOffsetStore
+		if boltStore, ok := s.offsetStore.(*offset.BoltDBStore); ok {
+			eventLogOffsetStore = boltStore
+		}
+	}
+	
+	return eventlog.NewReaderWithMetricsAndProgress(location.BasePath, location.ClusterGUID, location.InfobaseGUID, clusterName, infobaseName, s.cfg.MaxWorkers, metricsCallback, progressCallback, eventLogOffsetStore)
 }
 
 // runTechLogTailer runs a tech log tailer for a directory
@@ -377,6 +470,28 @@ func (s *ParserService) runTechLogTailer(ctx context.Context, dir string) {
 			Msg("Failed to extract GUIDs from path, metrics will have empty GUIDs")
 		clusterGUID = ""
 		infobaseGUID = ""
+	}
+	
+	// Get cluster_name and infobase_name from 1CV8Clst.lst
+	// Use LogDirs from config as search paths (they contain srvinfo paths)
+	var clusterName, infobaseName string
+	if clusterGUID != "" && infobaseGUID != "" {
+		clusterName, infobaseName, err = logreader.GetClusterAndInfobaseNames(clusterGUID, infobaseGUID, s.cfg.LogDirs)
+		if err != nil {
+			log.Debug().
+				Err(err).
+				Str("cluster_guid", clusterGUID).
+				Str("infobase_guid", infobaseGUID).
+				Msg("Failed to get cluster and infobase names, will use empty strings")
+		}
+		if clusterName != "" || infobaseName != "" {
+			log.Info().
+				Str("cluster_guid", clusterGUID).
+				Str("cluster_name", clusterName).
+				Str("infobase_guid", infobaseGUID).
+				Str("infobase_name", infobaseName).
+				Msg("Found cluster and infobase names for tech_log")
+		}
 	}
 	
 	// Auto-detect format: try logcfg.xml first, then fallback to first log file
@@ -457,19 +572,28 @@ func (s *ParserService) runTechLogTailer(ctx context.Context, dir string) {
 		recordsPerSec := float64(recordsParsed) / totalTime.Seconds()
 		
 		metrics := &domain.ParserMetrics{
-			Timestamp:        time.Now(),
-			ParserType:       "tech_log",
-			ClusterGUID:      clusterGUID,
-			ClusterName:      "", // Not available from path
-			InfobaseGUID:     infobaseGUID,
-			InfobaseName:     "", // Not available from path
-			FilesProcessed:   filesProcessed,
-			RecordsParsed:    recordsParsed,
-			ParsingTimeMs:    uint64(totalTime.Milliseconds()),
-			RecordsPerSecond: recordsPerSec,
-			StartTime:        startTime,
-			EndTime:          endTime,
-			ErrorCount:       0,
+			Timestamp:           time.Now(),
+			ParserType:          "tech_log",
+			ClusterGUID:          clusterGUID,
+			ClusterName:          clusterName,
+			InfobaseGUID:         infobaseGUID,
+			InfobaseName:         infobaseName,
+			FilePath:             dir, // Use directory path for tech_log (tailer reads multiple files)
+			FileName:             "",  // Not applicable for tech_log (multiple files)
+			FilesProcessed:       filesProcessed,
+			RecordsParsed:        recordsParsed,
+			ParsingTimeMs:        uint64(totalTime.Milliseconds()),
+			RecordsPerSecond:    recordsPerSec,
+			StartTime:           startTime,
+			EndTime:             endTime,
+			ErrorCount:          0,
+			// For tech_log, reading and parsing happen simultaneously (tailer reads line by line)
+			// Use total parsing time as approximation for record parsing time
+			FileReadingTimeMs:   0, // Not separately measured for tech_log (tailer reads on-demand)
+			RecordParsingTimeMs: uint64(totalTime.Milliseconds()), // Approximate: total time includes parsing
+			// DeduplicationTimeMs and WritingTimeMs will be enriched by writer from accumulated metrics
+			DeduplicationTimeMs: 0,
+			WritingTimeMs:        0,
 		}
 		
 		if !s.cfg.ReadOnly && s.writer != nil {
@@ -503,19 +627,28 @@ func (s *ParserService) runTechLogTailer(ctx context.Context, dir string) {
 			recordsPerSec := float64(recordsParsed) / elapsed.Seconds()
 			
 			metrics := &domain.ParserMetrics{
-				Timestamp:        time.Now(),
-				ParserType:       "tech_log",
-				ClusterGUID:      clusterGUID,
-				ClusterName:      "", // Not available from path
-				InfobaseGUID:     infobaseGUID,
-				InfobaseName:     "", // Not available from path
-				FilesProcessed:   filesProcessed,
-				RecordsParsed:    recordsParsed,
-				ParsingTimeMs:    uint64(elapsed.Milliseconds()),
-				RecordsPerSecond: recordsPerSec,
-				StartTime:        startTime,
-				EndTime:          currentTime,
-				ErrorCount:       0,
+				Timestamp:           time.Now(),
+				ParserType:          "tech_log",
+				ClusterGUID:          clusterGUID,
+				ClusterName:          "", // Not available from path
+				InfobaseGUID:         infobaseGUID,
+				InfobaseName:         "", // Not available from path
+				FilePath:             dir, // Use directory path for tech_log (tailer reads multiple files)
+				FileName:             "",  // Not applicable for tech_log (multiple files)
+				FilesProcessed:       filesProcessed,
+				RecordsParsed:        recordsParsed,
+				ParsingTimeMs:        uint64(elapsed.Milliseconds()),
+				RecordsPerSecond:     recordsPerSec,
+				StartTime:            startTime,
+				EndTime:              currentTime,
+				ErrorCount:            0,
+				// For tech_log, reading and parsing happen simultaneously (tailer reads line by line)
+				// Use elapsed time as approximation for record parsing time
+				FileReadingTimeMs:    0, // Not separately measured for tech_log (tailer reads on-demand)
+				RecordParsingTimeMs: uint64(elapsed.Milliseconds()), // Approximate: elapsed time includes parsing
+				// DeduplicationTimeMs and WritingTimeMs will be enriched by writer from accumulated metrics
+				DeduplicationTimeMs:  0,
+				WritingTimeMs:       0,
 			}
 			
 			if !s.cfg.ReadOnly && s.writer != nil {

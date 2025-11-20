@@ -1,46 +1,34 @@
--- Materialized View for New Errors
--- Tracks errors that appeared in last 24 hours but not in previous 24 hours
+-- Table for aggregated new errors from both event_log and tech_log
+-- Updated periodically by background worker (default: every 10 minutes)
+-- Contains aggregated error statistics with deduplication
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS logs.mv_new_errors
-ENGINE = AggregatingMergeTree()
-PARTITION BY toYYYYMMDD(error_date)
-ORDER BY (cluster_guid, infobase_guid, error_signature, error_date)
-TTL error_date + INTERVAL 7 DAY
-AS
-SELECT
-    cluster_guid,
-    infobase_guid,
-    name AS event_name,
-    arrayElement(property_value, indexOf(property_key, 'Txt')) AS error_text,
-    -- Create error signature for deduplication
-    sipHash64(concat(
-        name,
-        arrayElement(property_value, indexOf(property_key, 'Descr')),
-        arrayElement(property_value, indexOf(property_key, 'Txt'))
-    )) AS error_signature,
-    toDate(ts) AS error_date,
-    count() AS occurrences,
-    max(ts) AS last_seen,
-    min(ts) AS first_seen,
-    groupArray(10)(raw_line) AS sample_lines
-FROM logs.tech_log
-WHERE level IN ('ERROR', 'EXCP')
-  AND ts >= now() - INTERVAL 48 HOUR
-GROUP BY
-    cluster_guid,
-    infobase_guid,
-    event_name,
-    error_text,
-    error_signature,
-    error_date;
+CREATE TABLE IF NOT EXISTS logs.mv_new_errors (
+    cluster_guid String CODEC(ZSTD),
+    cluster_name String CODEC(ZSTD),
+    infobase_guid String CODEC(ZSTD),
+    infobase_name String CODEC(ZSTD),
+    event_name String CODEC(ZSTD),
+    error_text String CODEC(ZSTD),
+    error_signature UInt64 CODEC(T64, ZSTD),
+    occurrences UInt64 CODEC(T64, ZSTD),
+    first_seen DateTime64(6) CODEC(Delta, ZSTD),
+    last_seen DateTime64(6) CODEC(Delta, ZSTD),
+    sample_lines Array(String) CODEC(ZSTD),
+    sources Array(String) CODEC(ZSTD), -- ['event_log'], ['tech_log'], or ['event_log', 'tech_log']
+    updated_at DateTime64(6) DEFAULT now() CODEC(Delta, ZSTD)
+) ENGINE = ReplacingMergeTree(updated_at)
+PARTITION BY toYYYYMM(last_seen)
+ORDER BY (cluster_guid, infobase_guid, error_signature, last_seen)
+TTL last_seen + INTERVAL 7 DAY
+SETTINGS index_granularity = 8192;
 
 -- Helper query for getting truly new errors (not seen in previous period)
 -- Usage in Grafana:
 -- SELECT * FROM logs.mv_new_errors
--- WHERE error_date = today()
+-- WHERE toDate(last_seen) = today()
 --   AND error_signature NOT IN (
 --       SELECT DISTINCT error_signature
 --       FROM logs.mv_new_errors
---       WHERE error_date = today() - 1
+--       WHERE toDate(last_seen) = today() - 1
 --   )
 

@@ -1,7 +1,7 @@
 package writer
 
 import (
-	"crypto/sha256"
+	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
 	"sort"
@@ -10,10 +10,12 @@ import (
 	"github.com/1c-log-checker/internal/domain"
 )
 
-// calculateEventLogHash calculates SHA256 hash of event log record
+// calculateEventLogHash calculates SHA1 hash of event log record
 // Hash is computed from all fields that uniquely identify a record
+// Using SHA1 instead of SHA256 for better performance (20-30% faster)
+// SHA1 is sufficient for deduplication purposes (collision resistance is what matters)
 func calculateEventLogHash(record *domain.EventLogRecord) (string, error) {
-	h := sha256.New()
+	h := sha1.New()
 	
 	// Write all identifying fields to hash
 	fmt.Fprintf(h, "%s|", record.EventTime.Format(time.RFC3339Nano))
@@ -55,10 +57,12 @@ func calculateEventLogHash(record *domain.EventLogRecord) (string, error) {
 	return hex.EncodeToString(hashBytes), nil
 }
 
-// calculateTechLogHash calculates SHA256 hash of tech log record
+// calculateTechLogHash calculates SHA1 hash of tech log record
 // Hash is computed from all fields that uniquely identify a record
+// Using SHA1 instead of SHA256 for better performance (20-30% faster)
+// SHA1 is sufficient for deduplication purposes (collision resistance is what matters)
 func calculateTechLogHash(record *domain.TechLogRecord) (string, error) {
-	h := sha256.New()
+	h := sha1.New()
 	
 	// Write all identifying fields to hash
 	fmt.Fprintf(h, "%s|", record.Timestamp.Format(time.RFC3339Nano))

@@ -18,6 +18,7 @@ package eventlog
 import (
 	"bufio"
 	"context"
+	"os"
 	"fmt"
 	"io"
 	"strconv"
@@ -216,6 +217,203 @@ func (p *LgpParser) Parse(r io.Reader) ([]*domain.EventLogRecord, error) {
 
 	log.Info().Int("records", len(records)).Msg("Parsed .lgp file")
 	return records, nil
+}
+
+// ParseStream reads and parses .lgp file streamingly, sending records to channel
+// This avoids loading all records into memory for large files
+// file must be *os.File to support offset tracking
+// offsetCallback is called periodically to save progress (every 1000 records)
+// startOffset is the byte offset from which to start reading (0 = from beginning)
+func (p *LgpParser) ParseStream(ctx context.Context, file *os.File, recordChan chan<- *domain.EventLogRecord, offsetCallback func(currentOffset int64, recordsCount int64, lastTimestamp time.Time) error, startOffset int64) error {
+	// Use buffered reader with 4MB buffer for better performance
+	reader := bufio.NewReaderSize(file, 4*1024*1024)
+	
+	lineNum := 0
+	recordsCount := 0
+	const offsetSaveInterval = 100000 // Save offset every 100000 records (reduced frequency for performance)
+
+	// Only read header if we're at the beginning of the file
+	// If we're resuming from offset, skip header reading
+	if startOffset == 0 {
+		// Read header
+		line, err := reader.ReadString('\n')
+		if err != nil && err != io.EOF {
+			return fmt.Errorf("failed to read header: %w", err)
+		}
+		if line == "" {
+			return fmt.Errorf("empty file")
+		}
+		header := strings.TrimSpace(line)
+		// Remove BOM (Byte Order Mark) if present
+		header = strings.TrimPrefix(header, "\ufeff")
+		if !strings.HasPrefix(header, "1CV8LOG") {
+			return fmt.Errorf("invalid header: %s", header)
+		}
+		lineNum++
+
+		// Read infobase GUID (if not already set)
+		line, err = reader.ReadString('\n')
+		if err != nil && err != io.EOF {
+			return fmt.Errorf("failed to read infobase GUID: %w", err)
+		}
+		guid := strings.TrimSpace(line)
+		if p.infobaseGUID == "" {
+			p.infobaseGUID = guid
+		}
+		lineNum++
+	}
+
+	// Read all records (records can span multiple lines)
+	// Based on C# BracketsListReader logic: track brace depth to find complete records
+	// Pre-allocate builder with estimated record size (2KB per record)
+	currentRecord := strings.Builder{}
+	currentRecord.Grow(2048)
+	braceDepth := 0
+	inQuotes := false
+	escapeNext := false
+
+	for {
+		// Check context cancellation
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		line, err := reader.ReadString('\n')
+		if err != nil && err != io.EOF {
+			return fmt.Errorf("scanner error: %w", err)
+		}
+		if line == "" && err == io.EOF {
+			break
+		}
+		lineNum++
+
+		// Trim leading whitespace for processing, but preserve structure
+		lineTrimmed := strings.TrimLeft(line, " \t")
+
+		// Handle lines that start with comma
+		// If we're building a record (braceDepth > 0), comma is part of continuation - add it
+		// If we're not building a record (braceDepth == 0), comma is separator - skip it
+		if strings.HasPrefix(lineTrimmed, ",") {
+			if braceDepth == 0 {
+				// Not building a record - comma is separator, check what's after it
+				afterComma := strings.TrimSpace(lineTrimmed[1:])
+				if strings.HasPrefix(afterComma, "{") {
+					// New record starts after comma - process from after comma
+					lineTrimmed = afterComma
+				} else if afterComma == "" {
+					// Just a comma, skip this line
+					continue
+				} else {
+					// Something else after comma - might be continuation, but we're not building
+					// This shouldn't happen, but handle it
+					lineTrimmed = afterComma
+				}
+			}
+			// If braceDepth > 0, we're building a record - comma is part of it, process normally
+		}
+
+		// Process each character to track braces and quotes
+		for _, r := range lineTrimmed {
+			// Handle escape sequences in quoted strings
+			if escapeNext {
+				currentRecord.WriteRune(r)
+				escapeNext = false
+				continue
+			}
+
+			if r == '\\' && inQuotes {
+				escapeNext = true
+				currentRecord.WriteRune(r)
+				continue
+			}
+
+			// Track quotes (strings can contain braces)
+			if r == '"' {
+				inQuotes = !inQuotes
+				currentRecord.WriteRune(r)
+				continue
+			}
+
+			// Only count braces when not inside quotes
+			if !inQuotes {
+				if r == '{' {
+					// If we're starting a new record and depth was 0, this is the start
+					if braceDepth == 0 {
+						currentRecord.Reset()
+					}
+					braceDepth++
+					currentRecord.WriteRune(r)
+				} else if r == '}' {
+					braceDepth--
+					currentRecord.WriteRune(r)
+
+					// If brace depth is 0, we have a complete record
+					if braceDepth == 0 {
+						recordStr := strings.TrimSpace(currentRecord.String())
+
+						// Skip empty records
+						if recordStr == "" || recordStr == "{}" {
+							currentRecord.Reset()
+							continue
+						}
+
+						record, err := p.parseRecord(recordStr)
+						if err != nil {
+							log.Warn().Err(err).Int("line", lineNum).Str("line_preview", truncate(recordStr, 100)).Msg("Failed to parse record, skipping")
+							currentRecord.Reset()
+							continue
+						}
+
+						// Send record to channel (non-blocking with context check)
+						select {
+						case <-ctx.Done():
+							return ctx.Err()
+						case recordChan <- record:
+							recordsCount++
+							
+							// Save offset periodically (every offsetSaveInterval records)
+							if offsetCallback != nil && recordsCount%offsetSaveInterval == 0 {
+								// Get current file position
+								currentPos, err := file.Seek(0, io.SeekCurrent)
+								if err == nil {
+									if err := offsetCallback(currentPos, int64(recordsCount), record.EventTime); err != nil {
+										log.Warn().Err(err).Msg("Failed to save offset")
+									}
+								}
+							}
+						}
+						currentRecord.Reset()
+					}
+				} else {
+					currentRecord.WriteRune(r)
+				}
+			} else {
+				// Inside quotes - just copy
+				currentRecord.WriteRune(r)
+			}
+		}
+
+		// If we're building a record and haven't closed it, add newline
+		// (but only if we actually added something to the record)
+		if braceDepth > 0 && currentRecord.Len() > 0 {
+			currentRecord.WriteRune('\n')
+		}
+
+		// Check if we reached EOF
+		if err == io.EOF {
+			break
+		}
+	}
+
+	// Check if there's an incomplete record at the end
+	if braceDepth > 0 && currentRecord.Len() > 0 {
+		log.Warn().Int("line", lineNum).Str("record_preview", truncate(currentRecord.String(), 100)).Msg("Incomplete record at end of file, skipping")
+	}
+
+	log.Info().Int("records", recordsCount).Msg("Parsed .lgp file (streaming mode)")
+	return nil
 }
 
 // parseRecord parses a single record from .lgp file

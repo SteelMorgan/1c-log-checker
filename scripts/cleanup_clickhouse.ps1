@@ -1,9 +1,9 @@
 # Cleanup script for ClickHouse data (PowerShell)
-# Usage: .\scripts\cleanup_clickhouse.ps1 [all|event|tech|offsets]
+# Usage: .\scripts\cleanup_clickhouse.ps1 [all|event|tech]
 
 param(
     [Parameter(Position=0)]
-    [ValidateSet("all", "event", "tech", "offsets")]
+    [ValidateSet("all", "event", "tech")]
     [string]$Action = "all"
 )
 
@@ -85,11 +85,6 @@ switch ($Action) {
         $sql = Get-Content "$ProjectRoot\deploy\clickhouse\scripts\truncate_tech_log.sql" -Raw
         Execute-Sql -Query $sql
         Write-Host "✅ tech_log table truncated." -ForegroundColor Green
-    }
-    "offsets" {
-        Write-Host "Truncating log_offsets table..." -ForegroundColor Cyan
-        Execute-Sql -Query "TRUNCATE TABLE IF EXISTS logs.log_offsets;"
-        Write-Host "✅ log_offsets table truncated." -ForegroundColor Green
     }
 }
 

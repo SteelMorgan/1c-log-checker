@@ -30,7 +30,7 @@
         "name": "user",
         "type": "query",
         "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
-        "query": "SELECT DISTINCT COALESCE(um.user_name, el.user_name) AS user_name FROM logs.event_log el LEFT JOIN logs.user_map um ON el.infobase_guid = um.infobase_guid AND el.user_id = um.user_guid WHERE user_name != '' ORDER BY user_name",
+        "query": "SELECT DISTINCT user_name FROM logs.event_log WHERE user_name != '' ORDER BY user_name",
         "current": {
           "selected": false,
           "text": "All",
@@ -81,7 +81,7 @@
           "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
           "refId": "A",
           "queryType": "sql",
-          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(event_time), 300) * 300) AS time,\n  COALESCE(um.user_name, el.user_name) AS user,\n  count() AS count\nFROM logs.event_log el\nLEFT JOIN (\n  SELECT infobase_guid, user_guid, argMax(user_name, version) AS user_name\n  FROM logs.user_map\n  GROUP BY infobase_guid, user_guid\n) um ON el.infobase_guid = um.infobase_guid AND el.user_id = um.user_guid\nWHERE $__timeFilter(event_time)\n  AND ('$__all' IN ($infobase) OR el.infobase_name IN ($infobase))\n  AND ('$__all' IN ($user) OR COALESCE(um.user_name, el.user_name) IN ($user))\n  AND el.user_name != ''\nGROUP BY time, user\nORDER BY time, count DESC\nLIMIT 10",
+          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(event_time), 300) * 300) AS time,\n  user_name AS user,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\n  AND ('$__all' IN ($user) OR user_name IN ($user))\n  AND user_name != ''\nGROUP BY time, user\nORDER BY time, count DESC\nLIMIT 10",
           "format": 0
         }
       ],
@@ -104,7 +104,7 @@
           "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
           "refId": "A",
           "queryType": "sql",
-          "rawSql": "SELECT\n  COALESCE(um.user_name, el.user_name) AS user,\n  count() AS event_count\nFROM logs.event_log el\nLEFT JOIN (\n  SELECT infobase_guid, user_guid, argMax(user_name, version) AS user_name\n  FROM logs.user_map\n  GROUP BY infobase_guid, user_guid\n) um ON el.infobase_guid = um.infobase_guid AND el.user_id = um.user_guid\nWHERE $__timeFilter(event_time)\n  AND ('$__all' IN ($infobase) OR el.infobase_name IN ($infobase))\n  AND el.user_name != ''\nGROUP BY user\nORDER BY event_count DESC\nLIMIT 10",
+          "rawSql": "SELECT\n  user_name AS user,\n  count() AS event_count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\n  AND user_name != ''\nGROUP BY user\nORDER BY event_count DESC\nLIMIT 10",
           "format": 1
         }
       ],
@@ -147,7 +147,7 @@
       "targets": [
         {
           "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
-          "rawSql": "SELECT\n  el.event_time AS \"Дата, время\",\n  el.infobase_name AS \"Информационная база\",\n  COALESCE(um.user_name, el.user_name) AS \"Пользователь\",\n  el.computer AS \"Компьютер\",\n  el.application_presentation AS \"Приложение\",\n  el.event_presentation AS \"Событие\",\n  CASE\n    WHEN el.metadata_presentation != '' THEN el.metadata_presentation\n    ELSE COALESCE(\n      (\n        SELECT mm.metadata_name\n        FROM logs.metadata_map mm\n        WHERE mm.infobase_guid = el.infobase_guid\n          AND mm.metadata_guid = reinterpretAsUUID(unhex(replaceAll(extractAll(el.metadata_name, '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')[1], '-', '')))\n        ORDER BY mm.version DESC\n        LIMIT 1\n      ),\n      el.metadata_name\n    )\n  END AS \"Метаданные\",\n  el.comment AS \"Комментарий\",\n  el.transaction_status AS \"Статус транзакции\"\nFROM logs.event_log el\nLEFT JOIN (\n  SELECT infobase_guid, user_guid, argMax(user_name, version) AS user_name\n  FROM logs.user_map\n  GROUP BY infobase_guid, user_guid\n) um ON el.infobase_guid = um.infobase_guid AND el.user_id = um.user_guid\nWHERE $__timeFilter(event_time)\n  AND ('$__all' IN ($infobase) OR el.infobase_name IN ($infobase))\n  AND ('$__all' IN ($user) OR COALESCE(um.user_name, el.user_name) IN ($user))\nORDER BY el.event_time DESC\nLIMIT 1000",
+          "rawSql": "SELECT\n  event_time AS \"Дата, время\",\n  infobase_name AS \"Информационная база\",\n  user_name AS \"Пользователь\",\n  computer AS \"Компьютер\",\n  application_presentation AS \"Приложение\",\n  event_presentation AS \"Событие\",\n  CASE\n    WHEN metadata_presentation != '' THEN metadata_presentation\n    ELSE metadata_name\n  END AS \"Метаданные\",\n  comment AS \"Комментарий\",\n  transaction_status AS \"Статус транзакции\"\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\n  AND ('$__all' IN ($user) OR user_name IN ($user))\nORDER BY event_time DESC\nLIMIT 1000",
           "refId": "A",
           "queryType": "sql",
           "format": 1
@@ -173,7 +173,7 @@
           "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
           "refId": "A",
           "queryType": "sql",
-          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(event_time), 3600) * 3600) AS time,\n  COALESCE(um.user_name, el.user_name) AS user,\n  count() AS count\nFROM logs.event_log el\nLEFT JOIN (\n  SELECT infobase_guid, user_guid, argMax(user_name, version) AS user_name\n  FROM logs.user_map\n  GROUP BY infobase_guid, user_guid\n) um ON el.infobase_guid = um.infobase_guid AND el.user_id = um.user_guid\nWHERE $__timeFilter(event_time)\n  AND ('$__all' IN ($infobase) OR el.infobase_name IN ($infobase))\n  AND el.user_name != ''\nGROUP BY time, user\nORDER BY time",
+          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(event_time), 3600) * 3600) AS time,\n  user_name AS user,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\n  AND user_name != ''\nGROUP BY time, user\nORDER BY time",
           "format": 0
         }
       ],

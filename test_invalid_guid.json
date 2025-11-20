@@ -1,8 +1,0 @@
-{
-  "cluster_guid": "your-cluster-guid-here",
-  "infobase_guid": "d723aefd-7992-420d-b5f9-a273fd4146be",
-  "from": "2025-11-14T20:00:00+00:00",
-  "to": "2025-11-14T20:30:00+00:00",
-  "mode": "minimal",
-  "limit": 10
-}

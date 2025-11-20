@@ -71,7 +71,7 @@ TECHLOG_CONFIG_DIR=/home/user/projects/1c-log-checker/configs/techlog
    C:\Program Files\1cv8\8.3.27.1719\bin\conf
    ```
 
-2. Откройте PowerShell или командную строку **от имени администратора**
+2. Откройте текстовый редактортрока **от имени администратора**
 
 3. Отредактируйте файл `conf.cfg` в каталоге платформы:
    ```ini

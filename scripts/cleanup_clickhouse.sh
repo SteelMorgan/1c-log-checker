@@ -1,6 +1,6 @@
 #!/bin/bash
 # Cleanup script for ClickHouse data
-# Usage: ./scripts/cleanup_clickhouse.sh [all|event|tech|offsets]
+# Usage: ./scripts/cleanup_clickhouse.sh [all|event|tech]
 
 set -e
 
@@ -64,22 +64,11 @@ case "${1:-all}" in
         execute_sql "$SCRIPT_DIR/deploy/clickhouse/scripts/truncate_tech_log.sql"
         echo "✅ tech_log table truncated."
         ;;
-    offsets)
-        echo "Truncating log_offsets table..."
-        clickhouse-client \
-            --host="$CLICKHOUSE_HOST" \
-            --port="$CLICKHOUSE_PORT" \
-            --database="$CLICKHOUSE_DB" \
-            --user="$CLICKHOUSE_USER" \
-            --query="TRUNCATE TABLE IF EXISTS logs.log_offsets;"
-        echo "✅ log_offsets table truncated."
-        ;;
     *)
-        echo "Usage: $0 [all|event|tech|offsets]"
+        echo "Usage: $0 [all|event|tech]"
         echo "  all     - Truncate all tables"
         echo "  event   - Truncate event_log table only"
         echo "  tech    - Truncate tech_log table only"
-        echo "  offsets - Truncate log_offsets table only"
         exit 1
         ;;
 esac

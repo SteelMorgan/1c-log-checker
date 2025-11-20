@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -12,7 +13,6 @@ import (
 	"github.com/1c-log-checker/internal/config"
 	"github.com/1c-log-checker/internal/handlers"
 	"github.com/1c-log-checker/internal/mapping"
-	"github.com/1c-log-checker/internal/service"
 	"github.com/rs/zerolog/log"
 )
 
@@ -22,9 +22,6 @@ type Server struct {
 	httpServer  *http.Server
 	chClient    *clickhouse.Client
 	clusterMap  *mapping.ClusterMap
-
-	// Workers
-	enrichmentWorker *service.EnrichmentWorker
 
 	// Handlers
 	eventLogHandler           *handlers.EventLogHandler
@@ -44,8 +41,16 @@ func NewServer(cfg *config.Config) (*Server, error) {
 		return nil, fmt.Errorf("config is required")
 	}
 
-	// Connect to ClickHouse
-	chClient, err := clickhouse.NewClient(cfg.ClickHouseHost, cfg.ClickHousePort, cfg.ClickHouseDB)
+	// Connect to ClickHouse with retry configuration
+	chClient, err := clickhouse.NewClientFromConfig(
+		cfg.ClickHouseHost,
+		cfg.ClickHousePort,
+		cfg.ClickHouseDB,
+		cfg.RetryMaxAttempts,
+		cfg.RetryInitialDelay,
+		cfg.RetryMaxDelay,
+		cfg.RetryMultiplier,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to clickhouse: %w", err)
 	}
@@ -63,7 +68,7 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	// Initialize handlers
 	eventLogHandler := handlers.NewEventLogHandler(chClient, clusterMap)
 	techLogHandler := handlers.NewTechLogHandler(chClient, clusterMap)
-	newErrorsHandler := handlers.NewNewErrorsHandler(chClient, clusterMap)
+	newErrorsHandler := handlers.NewNewErrorsHandler(chClient)
 	configureTechHandler := handlers.NewConfigureTechLogHandler(cfg.TechLogConfigDir, cfg.TechLogDirs)
 	saveTechHandler := handlers.NewSaveTechLogHandler(cfg.TechLogConfigDir)
 	restoreTechHandler := handlers.NewRestoreTechLogHandler(cfg.TechLogConfigDir)
@@ -71,34 +76,10 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	getTechCfgHandler := handlers.NewGetTechLogConfigHandler()
 	getActualLogTimestampHandler := handlers.NewGetActualLogTimestampHandler(chClient)
 
-	// Initialize enrichment worker if enabled
-	var enrichmentWorker *service.EnrichmentWorker
-	if cfg.EnrichmentEnabled {
-		// Extract infobase GUIDs from cluster map
-		infobases := make([]string, 0, len(clusterMap.Infobases))
-		for guid := range clusterMap.Infobases {
-			infobases = append(infobases, guid)
-		}
-
-		enrichmentWorker = service.NewEnrichmentWorker(
-			chClient,
-			cfg.EnrichmentEndpoint,
-			cfg.EnrichmentAPIKey,
-			time.Duration(cfg.EnrichmentInterval)*time.Minute,
-			infobases,
-		)
-
-		log.Info().
-			Int("infobases", len(infobases)).
-			Str("endpoint", cfg.EnrichmentEndpoint).
-			Msg("Enrichment worker initialized")
-	}
-
 	return &Server{
 		cfg:                       cfg,
 		chClient:                  chClient,
 		clusterMap:                clusterMap,
-		enrichmentWorker:          enrichmentWorker,
 		eventLogHandler:           eventLogHandler,
 		techLogHandler:            techLogHandler,
 		newErrorsHandler:          newErrorsHandler,
@@ -111,25 +92,37 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	}, nil
 }
 
-// Start starts the MCP server
+// Start starts the MCP server (HTTP or stdio mode)
 func (s *Server) Start(ctx context.Context) error {
+	// Check if running in stdio mode (no port configured or MCP_MODE=stdio)
+	mcpMode := os.Getenv("MCP_MODE")
+	if mcpMode == "stdio" || s.cfg.MCPPort == 0 {
+		return s.startStdio(ctx)
+	}
+
+	// Default: HTTP mode
+	return s.startHTTP(ctx)
+}
+
+// startHTTP starts the MCP server in HTTP mode
+func (s *Server) startHTTP(ctx context.Context) error {
 	log.Info().
 		Int("port", s.cfg.MCPPort).
-		Msg("MCP server starting...")
+		Msg("MCP server starting in HTTP mode...")
 
 	// Setup HTTP server with MCP tool endpoints
 	mux := http.NewServeMux()
 
 	// Register tool endpoints
-	mux.HandleFunc("/tools/get_event_log", s.handleGetEventLog)
-	mux.HandleFunc("/tools/get_tech_log", s.handleGetTechLog)
-	mux.HandleFunc("/tools/get_new_errors_aggregated", s.handleGetNewErrorsAggregated)
-	mux.HandleFunc("/tools/configure_techlog", s.handleConfigureTechLog)
-	mux.HandleFunc("/tools/save_techlog", s.handleSaveTechLog)
-	mux.HandleFunc("/tools/restore_techlog", s.handleRestoreTechLog)
-	mux.HandleFunc("/tools/disable_techlog", s.handleDisableTechLog)
-	mux.HandleFunc("/tools/get_techlog_config", s.handleGetTechLogConfig)
-	mux.HandleFunc("/tools/get_actual_log_timestamp", s.handleGetActualLogTimestamp)
+	mux.HandleFunc("/tools/logc_get_event_log", s.handleGetEventLog)
+	mux.HandleFunc("/tools/logc_get_tech_log", s.handleGetTechLog)
+	mux.HandleFunc("/tools/logc_get_new_errors_aggregated", s.handleGetNewErrorsAggregated)
+	mux.HandleFunc("/tools/logc_configure_techlog", s.handleConfigureTechLog)
+	mux.HandleFunc("/tools/logc_save_techlog", s.handleSaveTechLog)
+	mux.HandleFunc("/tools/logc_restore_techlog", s.handleRestoreTechLog)
+	mux.HandleFunc("/tools/logc_disable_techlog", s.handleDisableTechLog)
+	mux.HandleFunc("/tools/logc_get_techlog_config", s.handleGetTechLogConfig)
+	mux.HandleFunc("/tools/logc_get_actual_log_timestamp", s.handleGetActualLogTimestamp)
 
 	// Health check
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -150,26 +143,22 @@ func (s *Server) Start(ctx context.Context) error {
 
 	log.Info().Int("port", s.cfg.MCPPort).Msg("MCP server started")
 
-	// Start enrichment worker if enabled
-	if s.enrichmentWorker != nil {
-		go s.enrichmentWorker.Start(ctx)
-		log.Info().Msg("Enrichment worker started")
-	}
-
 	// Wait for context cancellation
 	<-ctx.Done()
 	return nil
 }
 
+// startStdio starts the MCP server in stdio mode
+func (s *Server) startStdio(ctx context.Context) error {
+	log.Info().Msg("MCP server starting in stdio mode...")
+	
+	protocol := NewMCPProtocol(s)
+	return protocol.Start(ctx)
+}
+
 // Stop stops the MCP server gracefully
 func (s *Server) Stop() error {
 	log.Info().Msg("MCP server stopping...")
-
-	// Stop enrichment worker first
-	if s.enrichmentWorker != nil {
-		s.enrichmentWorker.Stop()
-		log.Info().Msg("Enrichment worker stopped")
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

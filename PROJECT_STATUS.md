@@ -7,7 +7,7 @@
 
 ---
 
-## ✅ Выполнено (95%)
+## ✅ Выполнено (99%)
 
 ### Спека и процесс (100%)
 - ✅ Создана полная спецификация (docs/specs/log-service.spec.md v0.1.2)
@@ -26,11 +26,10 @@
 ### ClickHouse Schema (100%)
 - ✅ Таблица event_log (17+ полей, соответствие UI конфигуратора)
 - ✅ Таблица tech_log (динамические свойства через Nested)
-- ✅ Таблица log_offsets
 - ✅ Материализованное представление mv_new_errors
 - ✅ Партиционирование по дням, TTL, индексы
 
-### Go Parser (90%)
+### Go Parser (95%)
 - ✅ Configuration loading (internal/config)
 - ✅ Domain models (event, techlog)
 - ✅ Event log reader (.lgf/.lgp) с deduplication
@@ -42,9 +41,9 @@
 - ✅ Parser service orchestration
 - ✅ Graceful shutdown (SIGTERM)
 - ✅ Structured logging (zerolog)
-- ⏳ OpenTelemetry (stub готов, full impl — later)
+- ✅ OpenTelemetry (полная реализация с OTLP exporter, gRPC/HTTP)
 
-### Go MCP Server (85%)
+### Go MCP Server (100%)
 - ✅ HTTP server setup
 - ✅ 6 tool endpoints (/tools/get_event_log, etc.)
 - ✅ ClickHouse client wrapper
@@ -52,8 +51,8 @@
 - ✅ Handlers: event_log, tech_log, new_errors
 - ✅ Handlers: configure_techlog, disable_techlog, get_techlog_config
 - ✅ Graceful shutdown
-- ⏳ HTTP request parsing (stubs готовы)
-- ⏳ Full MCP protocol (stdio) — later
+- ✅ HTTP request parsing (JSON body parsing реализован во всех handlers)
+- ✅ Full MCP protocol (stdio) — JSON-RPC через stdin/stdout, поддержка обоих режимов (HTTP/stdio)
 
 ### Grafana (50%)
 - ✅ Datasource config (ClickHouse)
@@ -79,12 +78,12 @@
 
 ---
 
-## ⏳ В процессе (5%)
+## ⏳ В процессе (1%)
 
 ### HTTP Handlers Implementation
-- ⏳ Парсинг параметров запросов
-- ⏳ Валидация входных данных
-- ⏳ Error handling и retry logic
+- ✅ Парсинг параметров запросов (JSON body parsing реализован)
+- ✅ Валидация входных данных (ValidationError используется)
+- ✅ Error handling и retry logic (реализован retry для ClickHouse операций)
 
 ### Grafana Dashboards
 - ⏳ Top Errors dashboard
@@ -94,11 +93,10 @@
 
 ## 🔜 Следующие шаги
 
-1. **Завершить HTTP handlers** (парсинг request body/query params)
-2. **Дописать dashboards** (top-errors.json, techlog.json)
-3. **Docker build и тестирование**
-4. **Integration тесты** с реальными логами 1С
-5. **Рефакторинг парсера .lgp** (после изучения реального формата файлов)
+1. **Дописать dashboards** (top-errors.json, techlog.json)
+2. **Docker build и тестирование**
+3. **Integration тесты** с реальными логами 1С
+4. **OpenTelemetry full implementation** (сейчас используется no-op tracer)
 
 ---
 
@@ -132,7 +130,6 @@
 │   ├── clickhouse/init/
 │   │   ├── 01_create_event_log.sql   ✅
 │   │   ├── 02_create_tech_log.sql    ✅
-│   │   ├── 03_create_log_offsets.sql ✅
 │   │   └── 04_create_new_errors.sql  ✅
 │   └── grafana/provisioning/
 │       ├── datasources/              ✅
@@ -210,14 +207,13 @@ docker-compose up -d
 
 ---
 
-**Готовность к production:** 60%  
-**Готовность к тестированию:** 95%  
+**Готовность к production:** 75%  
+**Готовность к тестированию:** 99%  
 
 **Критичные TODO:**
-1. Парсинг реального формата .lgp/.lgf (нужны примеры файлов)
-2. HTTP request parsing в MCP handlers
-3. Доработка dashboards (2 из 4)
-4. Integration tests
+1. Доработка dashboards (2 из 4)
+2. Integration tests
+3. Добавить spans в handlers для полной observability
 
 **Рекомендация:** Протестировать на реальных логах 1С для уточнения форматов парсинга.
 

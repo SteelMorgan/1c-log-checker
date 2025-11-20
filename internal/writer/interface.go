@@ -15,7 +15,13 @@ type BatchWriter interface {
 	WriteTechLog(ctx context.Context, record *domain.TechLogRecord) error
 	
 	// WriteParserMetrics writes parser performance metrics to ClickHouse
+	// For event_log: writes metrics for each file (FilesProcessed=1 per record)
+	// For tech_log: writes aggregated metrics
 	WriteParserMetrics(ctx context.Context, metrics *domain.ParserMetrics) error
+	
+	// WriteFileReadingProgress writes file reading progress to ClickHouse
+	// Mirrors offsets from BoltDB but with additional metadata for monitoring
+	WriteFileReadingProgress(ctx context.Context, progress *domain.FileReadingProgress) error
 	
 	// Flush forces writing all pending records to ClickHouse
 	Flush(ctx context.Context) error

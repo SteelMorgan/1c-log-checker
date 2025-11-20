@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/rs/zerolog/log"
 )
@@ -25,8 +26,11 @@ type LgfReader struct {
 	// Used for Users and Metadata which have UUIDs
 	referencedObjects map[objectTypeKey]referencedValue
 	
-	// Flag to track if file has been loaded
-	loaded bool
+	// Mutex to protect concurrent access to maps
+	mu sync.RWMutex
+	
+	// Once ensures file is loaded only once
+	loadOnce sync.Once
 }
 
 type objectTypeKey struct {
@@ -73,21 +77,26 @@ func (r *LgfReader) GetObjectValue(objectType ObjectType, number int, ctx contex
 		return ""
 	}
 	
-	key := objectTypeKey{ObjectType: objectType, Number: number}
-	if value, ok := r.objects[key]; ok {
-		return value
-	}
+	// Ensure file is loaded (only once, even if called from multiple goroutines)
+	var loadErr error
+	r.loadOnce.Do(func() {
+		loadErr = r.readTill(ObjectTypeNone, 0, 0, ctx)
+		if loadErr != nil {
+			log.Warn().Err(loadErr).Int("object_type", int(objectType)).Int("number", number).Msg("Failed to read from LGF file")
+		}
+	})
 	
-	// Load all objects from file if not loaded yet (lazy loading)
-	if !r.loaded {
-		if err := r.readTill(ObjectTypeNone, 0, 0, ctx); err != nil {
-			log.Warn().Err(err).Int("object_type", int(objectType)).Int("number", number).Msg("Failed to read from LGF file")
+	if loadErr != nil {
 			return ""
 		}
-		r.loaded = true
-	}
 	
-	if value, ok := r.objects[key]; ok {
+	// Read lock for reading from map (multiple readers can proceed concurrently)
+	key := objectTypeKey{ObjectType: objectType, Number: number}
+	r.mu.RLock()
+	value, ok := r.objects[key]
+	r.mu.RUnlock()
+	
+	if ok {
 		return value
 	}
 	
@@ -101,21 +110,26 @@ func (r *LgfReader) GetReferencedObjectValue(objectType ObjectType, number int, 
 		return "", ""
 	}
 	
-	key := objectTypeKey{ObjectType: objectType, Number: number}
-	if value, ok := r.referencedObjects[key]; ok {
-		return value.Value, value.UUID
-	}
+	// Ensure file is loaded (only once, even if called from multiple goroutines)
+	var loadErr error
+	r.loadOnce.Do(func() {
+		loadErr = r.readTill(ObjectTypeNone, 0, 0, ctx)
+		if loadErr != nil {
+			log.Warn().Err(loadErr).Int("object_type", int(objectType)).Int("number", number).Msg("Failed to read referenced object from LGF file")
+		}
+	})
 	
-	// Load all objects from file if not loaded yet (lazy loading)
-	if !r.loaded {
-		if err := r.readTill(ObjectTypeNone, 0, 0, ctx); err != nil {
-			log.Warn().Err(err).Int("object_type", int(objectType)).Int("number", number).Msg("Failed to read referenced object from LGF file")
+	if loadErr != nil {
 			return "", ""
 		}
-		r.loaded = true
-	}
 	
-	if value, ok := r.referencedObjects[key]; ok {
+	// Read lock for reading from map (multiple readers can proceed concurrently)
+	key := objectTypeKey{ObjectType: objectType, Number: number}
+	r.mu.RLock()
+	value, ok := r.referencedObjects[key]
+	r.mu.RUnlock()
+	
+	if ok {
 		return value.Value, value.UUID
 	}
 	

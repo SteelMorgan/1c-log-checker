@@ -85,18 +85,36 @@ func extractLogLocation(lgfPath string) (*LogLocation, error) {
 	infobaseGUID := filepath.Base(parentDir)
 	
 	// Validate GUID format (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
+	// Warn if format is invalid, but don't block processing
 	guidPattern := func(s string) bool {
 		parts := strings.Split(s, "-")
-		return len(parts) == 5 &&
-			len(parts[0]) == 8 &&
-			len(parts[1]) == 4 &&
-			len(parts[2]) == 4 &&
-			len(parts[3]) == 4 &&
-			len(parts[4]) == 12
+		if len(parts) != 5 ||
+			len(parts[0]) != 8 ||
+			len(parts[1]) != 4 ||
+			len(parts[2]) != 4 ||
+			len(parts[3]) != 4 ||
+			len(parts[4]) != 12 {
+			return false
+		}
+		
+		// Check that all characters are valid hex (0-9, a-f, A-F)
+		for _, part := range parts {
+			for _, char := range part {
+				if !((char >= '0' && char <= '9') ||
+					(char >= 'a' && char <= 'f') ||
+					(char >= 'A' && char <= 'F')) {
+					return false
+				}
+			}
+		}
+		return true
 	}
 	
 	if !guidPattern(infobaseGUID) {
-		return nil, fmt.Errorf("invalid infobase GUID format: %s", infobaseGUID)
+		log.Warn().
+			Str("infobase_guid", infobaseGUID).
+			Str("path", lgfPath).
+			Msg("Infobase GUID format is invalid (contains non-hex characters), but processing will continue")
 	}
 	
 	// Extract cluster GUID, name and infobase name from 1CV8Clst.lst file

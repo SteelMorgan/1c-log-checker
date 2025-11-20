@@ -8,6 +8,8 @@ import (
 
 	"github.com/1c-log-checker/internal/clickhouse"
 	"github.com/1c-log-checker/internal/mapping"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 // TechLogHandler handles get_tech_log MCP tool
@@ -46,21 +48,43 @@ func NewTechLogHandler(ch *clickhouse.Client, clusterMap *mapping.ClusterMap) *T
 
 // GetTechLog retrieves tech log records
 func (h *TechLogHandler) GetTechLog(ctx context.Context, params TechLogParams) (string, error) {
+	// Start span for the entire operation
+	ctx, span := startSpan(ctx, "handlers.GetTechLog",
+		attribute.String("handler", "tech_log"),
+		attribute.String("cluster_guid", params.ClusterGUID),
+		attribute.String("infobase_guid", params.InfobaseGUID),
+		attribute.String("mode", params.Mode),
+		attribute.Int("limit", params.Limit),
+		attribute.String("event_name", params.Name),
+	)
+	defer func() {
+		if err := recover(); err != nil {
+			span.RecordError(fmt.Errorf("panic: %v", err))
+			span.SetStatus(codes.Error, fmt.Sprintf("panic: %v", err))
+			span.End()
+			panic(err)
+		}
+	}()
+
 	// Validate GUIDs
 	if err := ValidateGUID(params.ClusterGUID, "cluster_guid"); err != nil {
+		endSpanWithError(span, err, "validation failed")
 		return "", err
 	}
 	if err := ValidateGUID(params.InfobaseGUID, "infobase_guid"); err != nil {
+		endSpanWithError(span, err, "validation failed")
 		return "", err
 	}
 
 	// Validate time range
 	if err := ValidateTimeRange(params.From.Format(time.RFC3339), params.To.Format(time.RFC3339)); err != nil {
+		endSpanWithError(span, err, "validation failed")
 		return "", err
 	}
 
 	// Validate mode
 	if err := ValidateMode(params.Mode); err != nil {
+		endSpanWithError(span, err, "validation failed")
 		return "", err
 	}
 
@@ -110,14 +134,24 @@ func (h *TechLogHandler) GetTechLog(ctx context.Context, params TechLogParams) (
 	}
 	args = append(args, params.Limit)
 	
-	// Execute query
+	// Execute query with span
+	_, querySpan := startSpan(ctx, "clickhouse.query",
+		attribute.String("query.mode", params.Mode),
+		attribute.String("db.system", "clickhouse"),
+		attribute.String("db.name", "logs"),
+		attribute.String("db.sql.table", "tech_log"),
+	)
+	
 	rows, err := h.ch.Query(ctx, query, args...)
 	if err != nil {
+		endSpanWithError(querySpan, err, "query execution failed")
+		endSpanWithError(span, err, "query failed")
 		return "", fmt.Errorf("query failed: %w", err)
 	}
 	defer rows.Close()
 
 	var jsonData []byte
+	var resultsCount int
 
 	// Collect results based on mode
 	if params.Mode == "minimal" {
@@ -138,20 +172,33 @@ func (h *TechLogHandler) GetTechLog(ctx context.Context, params TechLogParams) (
 				&record.PropertyValue,
 				&rawLine,
 			); err != nil {
+				endSpanWithError(querySpan, err, "scan failed")
+				endSpanWithError(span, err, "scan failed")
 				return "", fmt.Errorf("scan failed: %w", err)
 			}
 			results = append(results, record)
 		}
 
 		if err := rows.Err(); err != nil {
+			endSpanWithError(querySpan, err, "rows error")
+			endSpanWithError(span, err, "rows error")
 			return "", fmt.Errorf("rows error: %w", err)
 		}
 
+		resultsCount = len(results)
+		querySpan.SetAttributes(attribute.Int("db.rows.count", resultsCount))
+		endSpanSuccess(querySpan)
+
 		// Convert to JSON
+		_, jsonSpan := startSpan(ctx, "json.marshal")
 		jsonData, err = json.MarshalIndent(results, "", "  ")
 		if err != nil {
+			endSpanWithError(jsonSpan, err, "json marshal failed")
+			endSpanWithError(span, err, "json marshal failed")
 			return "", fmt.Errorf("json marshal failed: %w", err)
 		}
+		jsonSpan.SetAttributes(attribute.Int("json.size_bytes", len(jsonData)))
+		endSpanSuccess(jsonSpan)
 	} else {
 		// Full mode: Include raw_line
 		var results []TechLogFull
@@ -170,22 +217,37 @@ func (h *TechLogHandler) GetTechLog(ctx context.Context, params TechLogParams) (
 				&record.PropertyValue,
 				&record.RawLine,
 			); err != nil {
+				endSpanWithError(querySpan, err, "scan failed")
+				endSpanWithError(span, err, "scan failed")
 				return "", fmt.Errorf("scan failed: %w", err)
 			}
 			results = append(results, record)
 		}
 
 		if err := rows.Err(); err != nil {
+			endSpanWithError(querySpan, err, "rows error")
+			endSpanWithError(span, err, "rows error")
 			return "", fmt.Errorf("rows error: %w", err)
 		}
 
+		resultsCount = len(results)
+		querySpan.SetAttributes(attribute.Int("db.rows.count", resultsCount))
+		endSpanSuccess(querySpan)
+
 		// Convert to JSON
+		_, jsonSpan := startSpan(ctx, "json.marshal")
 		jsonData, err = json.MarshalIndent(results, "", "  ")
 		if err != nil {
+			endSpanWithError(jsonSpan, err, "json marshal failed")
+			endSpanWithError(span, err, "json marshal failed")
 			return "", fmt.Errorf("json marshal failed: %w", err)
 		}
+		jsonSpan.SetAttributes(attribute.Int("json.size_bytes", len(jsonData)))
+		endSpanSuccess(jsonSpan)
 	}
 
+	span.SetAttributes(attribute.Int("result.records_count", resultsCount))
+	endSpanSuccess(span)
 	return string(jsonData), nil
 }
 

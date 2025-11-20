@@ -22,7 +22,12 @@ func main() {
 	}
 
 	// Initialize logger
-	observability.InitLogger(cfg.LogLevel)
+	// debug level = debug file only, info/warn/error = service logs to file
+	logFile := ""
+	if cfg.LogLevel != "debug" {
+		logFile = "/app/logs/parser.log" // Default path for parser
+	}
+	observability.InitLogger(cfg.LogLevel, logFile)
 
 	log.Info().
 		Str("version", "0.1.0").
@@ -30,7 +35,14 @@ func main() {
 
 	// Initialize tracer (if enabled)
 	if cfg.TracingEnabled {
-		shutdown, err := observability.InitTracer("1c-log-parser")
+		tracerCfg := observability.TracerConfig{
+			ServiceName:    cfg.ServiceName,
+			ServiceVersion: cfg.ServiceVersion,
+			Endpoint:       cfg.OTLPEndpoint,
+			Protocol:       cfg.OTLPProtocol,
+			Enabled:        cfg.TracingEnabled,
+		}
+		shutdown, err := observability.InitTracer(tracerCfg)
 		if err != nil {
 			log.Error().Err(err).Msg("Failed to initialize tracer")
 		} else {
@@ -43,7 +55,7 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to create parser service")
 	}
-	
+
 	// Setup graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -80,4 +92,3 @@ func main() {
 
 	log.Info().Msg("Parser service stopped")
 }
-

@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS logs.event_log (
     props_value Array(String) CODEC(ZSTD),
     
     -- Хеш записи для дедупликации
-    record_hash String CODEC(ZSTD)  -- SHA256 hash (64 hex characters)
+    record_hash String CODEC(ZSTD)  -- SHA1 hash (40 hex characters)
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMMDD(event_time)
 ORDER BY (cluster_guid, infobase_guid, event_time, session_id, record_hash)

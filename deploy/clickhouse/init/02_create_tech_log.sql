@@ -334,7 +334,7 @@ CREATE TABLE IF NOT EXISTS logs.tech_log (
     property_value Array(String) CODEC(ZSTD),
     
     -- Хеш записи для дедупликации
-    record_hash String CODEC(ZSTD)  -- SHA256 hash (64 hex characters)
+    record_hash String CODEC(ZSTD)  -- SHA1 hash (40 hex characters)
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMMDD(ts)
 ORDER BY (cluster_guid, infobase_guid, name, ts, record_hash)
