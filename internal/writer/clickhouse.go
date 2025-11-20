@@ -9,6 +9,7 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/1c-log-checker/internal/domain"
+	"github.com/1c-log-checker/internal/normalizer"
 	"github.com/1c-log-checker/internal/retry"
 	"github.com/rs/zerolog/log"
 )
@@ -28,7 +29,6 @@ func ensureValidDateTime(t time.Time) time.Time {
 	return t
 }
 
-
 // ClickHouseWriter writes records to ClickHouse in batches
 type ClickHouseWriter struct {
 	conn     clickhouse.Conn
@@ -39,7 +39,6 @@ type ClickHouseWriter struct {
 	techLogBatch  []*domain.TechLogRecord
 	
 	lastFlush time.Time
-	stopCh    chan struct{}
 	
 	// Mutex to protect batch operations (append, flush)
 	batchMutex sync.Mutex
@@ -50,6 +49,10 @@ type ClickHouseWriter struct {
 	deduplicationRecordsCount   uint64
 	writingRecordsCount         uint64
 	metricsMutex                sync.Mutex
+	
+	// Error normalization (synchronous, during batch preparation)
+	normalizer        *normalizer.CommentNormalizer
+	techLogNormalizer *normalizer.TechLogNormalizer
 }
 
 // NewClickHouseWriter creates a new ClickHouse batch writer with default retry config
@@ -59,19 +62,22 @@ func NewClickHouseWriter(conn clickhouse.Conn, cfg BatchConfig) *ClickHouseWrite
 
 // NewClickHouseWriterWithRetry creates a new ClickHouse batch writer with custom retry config
 func NewClickHouseWriterWithRetry(conn clickhouse.Conn, cfg BatchConfig, retryCfg retry.Config) *ClickHouseWriter {
-	return &ClickHouseWriter{
+	writer := &ClickHouseWriter{
 		conn:          conn,
 		cfg:           cfg,
 		retryCfg:      retryCfg,
 		eventLogBatch: make([]*domain.EventLogRecord, 0, cfg.MaxSize),
 		techLogBatch:  make([]*domain.TechLogRecord, 0, cfg.MaxSize),
 		lastFlush:     time.Now(),
-		stopCh:        make(chan struct{}),
 		deduplicationTimeAccumulator: 0,
 		writingTimeAccumulator:       0,
 		deduplicationRecordsCount:   0,
 		writingRecordsCount:         0,
+		normalizer:           normalizer.NewCommentNormalizer(),
+		techLogNormalizer:    normalizer.NewTechLogNormalizer(),
 	}
+	
+	return writer
 }
 
 // WriteEventLog adds an event log record to the batch
@@ -474,7 +480,12 @@ func (w *ClickHouseWriter) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	
-	return w.Flush(ctx)
+	// Flush pending records
+	if err := w.Flush(ctx); err != nil {
+		log.Error().Err(err).Msg("Error flushing during close")
+	}
+	
+	return nil
 }
 
 // flushEventLog writes event log batch to ClickHouse with deduplication
@@ -742,10 +753,29 @@ func (w *ClickHouseWriter) flushEventLogSnapshot(ctx context.Context, batchSnaps
 		return nil
 	}
 	
+	// Normalize comments for error records synchronously before writing
+	// Note: Level is stored in Russian ("Ошибка") in 1C Event Log
+	normalizedComments := make([]string, len(recordsToWrite))
+	for i, record := range recordsToWrite {
+		if (record.Level == "Error" || record.Level == "Ошибка") && record.Comment != "" {
+			normalizedComments[i] = w.normalizer.NormalizeComment(record.Comment)
+		} else {
+			normalizedComments[i] = ""
+		}
+	}
+	
 	// Measure writing time separately
 	writingStartTime := time.Now()
 	
-	batch, err := w.conn.PrepareBatch(ctx, "INSERT INTO logs.event_log")
+	batch, err := w.conn.PrepareBatch(ctx, `INSERT INTO logs.event_log (
+		event_time, cluster_guid, cluster_name, infobase_guid, infobase_name,
+		level, event, event_presentation, user_name, user_id, computer,
+		application, application_presentation, session_id, connection_id, connection,
+		transaction_status, transaction_id, transaction_number, transaction_datetime,
+		data_separation, metadata_name, metadata_presentation, comment, data,
+		data_presentation, server, primary_port, secondary_port, props_key, props_value,
+		record_hash, comment_normalized
+	)`)
 	if err != nil {
 		return fmt.Errorf("failed to prepare batch: %w", err)
 	}
@@ -786,6 +816,7 @@ func (w *ClickHouseWriter) flushEventLogSnapshot(ctx context.Context, batchSnaps
 			propKeys,
 			propVals,
 			hashes[i], // record_hash
+			normalizedComments[i], // comment_normalized - normalized synchronously
 		)
 		if err != nil {
 			// CRITICAL: Log detailed information about the failed record
@@ -1009,6 +1040,16 @@ func (w *ClickHouseWriter) flushTechLogSnapshot(ctx context.Context, batchSnapsh
 				Msg("Deduplication metrics (all records were duplicates)")
 		}
 		return nil
+	}
+	
+	// Normalize raw_line for all records synchronously before writing
+	normalizedRawLines := make([]string, len(recordsToWrite))
+	for i, record := range recordsToWrite {
+		if record.RawLine != "" {
+			normalizedRawLines[i] = w.techLogNormalizer.NormalizeRawLine(record.RawLine)
+		} else {
+			normalizedRawLines[i] = ""
+		}
 	}
 	
 	// Measure writing time separately
@@ -1324,6 +1365,7 @@ func (w *ClickHouseWriter) flushTechLogSnapshot(ctx context.Context, batchSnapsh
 			propKeys,
 			propVals,
 			hashes[i], // record_hash
+			normalizedRawLines[i], // raw_line_normalized - normalized synchronously
 		)
 	if err != nil {
 		return fmt.Errorf("failed to append to batch: %w", err)

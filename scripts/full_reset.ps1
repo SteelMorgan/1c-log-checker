@@ -91,7 +91,8 @@ if ($volumeExists) {
 
 Write-Host "Rebuilding Docker images..." -ForegroundColor Cyan
 cd deploy/docker
-docker-compose build --no-cache
+docker-compose build --no-cache log-parser
+docker-compose build --no-cache mcp-server
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Error building images!" -ForegroundColor Red
     cd ../..

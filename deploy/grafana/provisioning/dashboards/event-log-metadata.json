@@ -1,0 +1,143 @@
+{
+  "title": "1C Event Log - Metadata Analysis",
+  "uid": "1c-event-log-metadata",
+  "version": 1,
+  "schemaVersion": 38,
+  "tags": ["1c", "event-log", "metadata"],
+  "timezone": "browser",
+  "editable": true,
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "refresh": "1m",
+  "templating": {
+    "list": [
+      {
+        "name": "infobase",
+        "type": "query",
+        "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+        "query": "SELECT DISTINCT infobase_name FROM logs.event_log WHERE infobase_name != '' ORDER BY cluster_name, infobase_name",
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": "$__all"
+        },
+        "includeAll": true,
+        "multi": true,
+        "allValue": null,
+        "saveState": true
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Топ изменяемых объектов",
+      "type": "barchart",
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 0},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  metadata_presentation AS metadata,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND metadata_presentation != ''\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nGROUP BY metadata_presentation\nORDER BY count DESC\nLIMIT 30",
+          "format": 1
+        }
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "xField": "count",
+        "yField": "metadata",
+        "colorByField": "metadata"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Изменения документов",
+      "type": "timeseries",
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 10},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(event_time), 300) * 300) AS time,\n  event_presentation AS event,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND event_presentation IN ('Данные. Изменение', 'Данные. Создание', 'Данные. Удаление')\n  AND metadata_presentation != ''\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nGROUP BY time, event\nORDER BY time",
+          "format": 0
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "fillOpacity": 10
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Распределение по типам метаданных",
+      "type": "piechart",
+      "gridPos": {"h": 10, "w": 12, "x": 0, "y": 20},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  CASE\n    WHEN splitByChar('.', metadata_name)[1] != '' THEN splitByChar('.', metadata_name)[1]\n    ELSE 'Unknown'\n  END AS metadata_type,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND metadata_name != ''\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nGROUP BY metadata_type\nORDER BY count DESC",
+          "format": 1
+        }
+      ],
+      "options": {
+        "pieType": "pie",
+        "tooltip": {
+          "mode": "single"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": ["value", "percent"]
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Топ типов метаданных",
+      "type": "table",
+      "gridPos": {"h": 10, "w": 12, "x": 12, "y": 20},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  CASE\n    WHEN splitByChar('.', metadata_name)[1] != '' THEN splitByChar('.', metadata_name)[1]\n    ELSE 'Unknown'\n  END AS \"Тип метаданных\",\n  count() AS \"Количество событий\",\n  uniq(metadata_name) AS \"Уникальных объектов\"\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND metadata_name != ''\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nGROUP BY \"Тип метаданных\"\nORDER BY \"Количество событий\" DESC",
+          "format": 1
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Количество событий"
+          }
+        ]
+      }
+    }
+  ]
+}
+

@@ -1,0 +1,175 @@
+{
+  "title": "1C Event Log - Errors",
+  "uid": "1c-event-log-errors",
+  "version": 1,
+  "schemaVersion": 38,
+  "tags": ["1c", "event-log", "errors"],
+  "timezone": "browser",
+  "editable": true,
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "refresh": "5m",
+  "templating": {
+    "list": [
+      {
+        "name": "infobase",
+        "type": "query",
+        "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+        "query": "SELECT DISTINCT infobase_name FROM logs.event_log WHERE infobase_name != '' ORDER BY cluster_name, infobase_name",
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": "$__all"
+        },
+        "includeAll": true,
+        "multi": true,
+        "allValue": null,
+        "saveState": true
+      },
+      {
+        "name": "comment_normalized",
+        "type": "query",
+        "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+        "query": "SELECT DISTINCT comment_normalized FROM logs.event_log WHERE level IN ('Error', 'Ошибка') AND comment_normalized != '' ORDER BY comment_normalized",
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": "$__all"
+        },
+        "includeAll": true,
+        "multi": true,
+        "allValue": null
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Новые ошибки по базам",
+      "type": "barchart",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 0},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "WITH period_start AS (\n  SELECT min(event_time) AS start_time\n  FROM logs.event_log\n  WHERE $__timeFilter(event_time)\n),\nrecent_errors AS (\n  SELECT DISTINCT comment_normalized, infobase_name, cluster_name\n  FROM logs.event_log\n  WHERE $__timeFilter(event_time)\n    AND level IN ('Error', 'Ошибка')\n    AND comment_normalized != ''\n    AND comment != ''\n    AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\n),\nhistorical_errors AS (\n  SELECT DISTINCT comment_normalized, infobase_name\n  FROM logs.event_log\n  CROSS JOIN period_start\n  WHERE period_start.start_time IS NOT NULL\n    AND event_time >= period_start.start_time - INTERVAL 30 DAY\n    AND event_time < period_start.start_time\n    AND level IN ('Error', 'Ошибка')\n    AND comment_normalized != ''\n    AND comment != ''\n    AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\n)\nSELECT\n  r.infobase_name AS infobase,\n  count() AS new_errors_count\nFROM recent_errors r\nLEFT JOIN historical_errors h\n  ON r.comment_normalized = h.comment_normalized\n  AND r.infobase_name = h.infobase_name\nWHERE h.comment_normalized IS NULL\nGROUP BY r.infobase_name, r.cluster_name\nORDER BY r.cluster_name, r.infobase_name",
+          "format": 1
+        }
+      ],
+      "options": {
+        "orientation": "vertical",
+        "xField": "infobase",
+        "yField": "new_errors_count",
+        "colorByField": "infobase"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Детализация новых ошибок",
+      "type": "table",
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 8},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "WITH period_start AS (\n  SELECT min(event_time) AS start_time\n  FROM logs.event_log\n  WHERE $__timeFilter(event_time)\n),\nrecent_errors AS (\n  SELECT DISTINCT comment_normalized, infobase_name\n  FROM logs.event_log\n  WHERE $__timeFilter(event_time)\n    AND level IN ('Error', 'Ошибка')\n    AND comment_normalized != ''\n    AND comment != ''\n    AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\n),\nhistorical_errors AS (\n  SELECT DISTINCT comment_normalized, infobase_name\n  FROM logs.event_log\n  CROSS JOIN period_start\n  WHERE period_start.start_time IS NOT NULL\n    AND event_time >= period_start.start_time - INTERVAL 30 DAY\n    AND event_time < period_start.start_time\n    AND level IN ('Error', 'Ошибка')\n    AND comment_normalized != ''\n    AND comment != ''\n    AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\n)\nSELECT\n  el.comment_normalized AS \"Нормализованная ошибка\",\n  el.infobase_name AS \"Информационная база\",\n  el.event_time AS \"Время\",\n  el.user_name AS \"Пользователь\",\n  el.metadata_presentation AS \"Метаданные\",\n  el.data_presentation AS \"Данные\",\n  el.comment AS \"Комментарий\"\nFROM logs.event_log el\nINNER JOIN (\n  SELECT DISTINCT r.comment_normalized, r.infobase_name\n  FROM recent_errors r\n  LEFT JOIN historical_errors h\n    ON r.comment_normalized = h.comment_normalized\n    AND r.infobase_name = h.infobase_name\n  WHERE h.comment_normalized IS NULL\n) new_errors\n  ON el.comment_normalized = new_errors.comment_normalized\n  AND el.infobase_name = new_errors.infobase_name\nWHERE $__timeFilter(el.event_time)\n  AND el.level IN ('Error', 'Ошибка')\n  AND el.comment_normalized != ''\n  AND ('$__all' IN ($infobase) OR el.infobase_name IN ($infobase))\n  AND ('$__all' IN ($comment_normalized) OR el.comment_normalized IN ($comment_normalized))\nORDER BY el.comment_normalized, el.event_time DESC\nLIMIT 1000",
+          "format": 1
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": false,
+            "displayName": "Нормализованная ошибка"
+          }
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "title": "Топ-20 нормализованных ошибок",
+      "type": "table",
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 20},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  comment_normalized AS \"Нормализованная ошибка\",\n  count() AS \"Количество\",\n  min(event_time) AS \"Первое появление\",\n  max(event_time) AS \"Последнее появление\",\n  any(comment) AS \"Пример комментария\"\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND level IN ('Error', 'Ошибка')\n  AND (comment_normalized != '' OR comment != '')\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nGROUP BY comment_normalized\nORDER BY count() DESC\nLIMIT 20",
+          "format": 1
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Количество"
+          }
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "title": "Ошибки по метаданным",
+      "type": "table",
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 32},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  CASE\n    WHEN metadata_presentation != '' THEN metadata_presentation\n    WHEN metadata_name != '' THEN metadata_name\n    ELSE '(без метаданных)'\n  END AS \"Метаданные\",\n  CASE\n    WHEN comment_normalized != '' THEN comment_normalized\n    ELSE '(без нормализации)'\n  END AS \"Нормализованная ошибка\",\n  count() AS \"Количество\"\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND level IN ('Error', 'Ошибка')\n  AND (comment_normalized != '' OR comment != '')\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nGROUP BY \"Метаданные\", \"Нормализованная ошибка\"\nORDER BY count() DESC\nLIMIT 500",
+          "format": 1
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Количество"
+          }
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "title": "Ошибки по пользователям",
+      "type": "table",
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 44},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  CASE\n    WHEN user_name != '' THEN user_name\n    ELSE '(без пользователя)'\n  END AS \"Пользователь\",\n  CASE\n    WHEN comment_normalized != '' THEN comment_normalized\n    ELSE '(без нормализации)'\n  END AS \"Нормализованная ошибка\",\n  count() AS \"Количество\"\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND level IN ('Error', 'Ошибка')\n  AND (comment_normalized != '' OR comment != '')\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nGROUP BY \"Пользователь\", \"Нормализованная ошибка\"\nORDER BY count() DESC\nLIMIT 500",
+          "format": 1
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Количество"
+          }
+        ]
+      }
+    }
+  ]
+}
+

@@ -1,0 +1,158 @@
+{
+  "title": "1C Event Log - Explorer",
+  "uid": "1c-event-log-explorer",
+  "version": 1,
+  "schemaVersion": 38,
+  "tags": ["1c", "event-log", "explorer"],
+  "timezone": "browser",
+  "editable": true,
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "refresh": "1m",
+  "templating": {
+    "list": [
+      {
+        "name": "infobase",
+        "type": "query",
+        "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+        "query": "SELECT DISTINCT infobase_name FROM logs.event_log WHERE infobase_name != '' ORDER BY cluster_name, infobase_name",
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": "$__all"
+        },
+        "includeAll": true,
+        "multi": true,
+        "allValue": null,
+        "saveState": true
+      },
+      {
+        "name": "cluster",
+        "type": "query",
+        "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+        "query": "SELECT DISTINCT cluster_name FROM logs.event_log WHERE cluster_name != '' ORDER BY cluster_name",
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": "$__all"
+        },
+        "includeAll": true,
+        "multi": true,
+        "allValue": null
+      },
+      {
+        "name": "level",
+        "type": "query",
+        "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+        "query": "SELECT DISTINCT level FROM logs.event_log WHERE level != '' ORDER BY level",
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": "$__all"
+        },
+        "includeAll": true,
+        "multi": true,
+        "allValue": null
+      },
+      {
+        "name": "user",
+        "type": "query",
+        "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+        "query": "SELECT DISTINCT user_name FROM logs.event_log WHERE user_name != '' ORDER BY user_name",
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": "$__all"
+        },
+        "includeAll": true,
+        "multi": true,
+        "allValue": null
+      },
+      {
+        "name": "event",
+        "type": "query",
+        "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+        "query": "SELECT DISTINCT event_presentation FROM logs.event_log WHERE event_presentation != '' ORDER BY event_presentation",
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": "$__all"
+        },
+        "includeAll": true,
+        "multi": true,
+        "allValue": null
+      },
+      {
+        "name": "metadata",
+        "type": "query",
+        "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+        "query": "SELECT DISTINCT metadata_presentation FROM logs.event_log WHERE metadata_presentation != '' ORDER BY metadata_presentation",
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": "$__all"
+        },
+        "includeAll": true,
+        "multi": true,
+        "allValue": null
+      },
+      {
+        "name": "application",
+        "type": "query",
+        "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+        "query": "SELECT DISTINCT application_presentation FROM logs.event_log WHERE application_presentation != '' ORDER BY application_presentation",
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": "$__all"
+        },
+        "includeAll": true,
+        "multi": true,
+        "allValue": null
+      },
+      {
+        "name": "transaction_status",
+        "type": "query",
+        "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+        "query": "SELECT DISTINCT transaction_status FROM logs.event_log WHERE transaction_status != '' ORDER BY transaction_status",
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": "$__all"
+        },
+        "includeAll": true,
+        "multi": true,
+        "allValue": null
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Детальная таблица событий",
+      "type": "table",
+      "gridPos": {"h": 20, "w": 24, "x": 0, "y": 0},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  event_time AS \"Дата, время\",\n  cluster_name AS \"Кластер\",\n  infobase_name AS \"Информационная база\",\n  level AS \"Уровень\",\n  event_presentation AS \"Событие\",\n  user_name AS \"Пользователь\",\n  computer AS \"Компьютер\",\n  application_presentation AS \"Приложение\",\n  session_id AS \"Сеанс\",\n  connection AS \"Соединение\",\n  transaction_status AS \"Статус транзакции\",\n  transaction_id AS \"ID транзакции\",\n  metadata_presentation AS \"Метаданные\",\n  data_presentation AS \"Данные\",\n  comment AS \"Комментарий\",\n  comment_normalized AS \"Нормализованный комментарий\",\n  server AS \"Сервер\",\n  data_separation AS \"Разделение данных\"\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\n  AND ('$__all' IN ($cluster) OR cluster_name IN ($cluster))\n  AND ('$__all' IN ($level) OR level IN ($level))\n  AND ('$__all' IN ($user) OR user_name IN ($user))\n  AND ('$__all' IN ($event) OR event_presentation IN ($event))\n  AND ('$__all' IN ($metadata) OR metadata_presentation IN ($metadata))\n  AND ('$__all' IN ($application) OR application_presentation IN ($application))\n  AND ('$__all' IN ($transaction_status) OR transaction_status IN ($transaction_status))\nORDER BY event_time DESC\nLIMIT 5000",
+          "format": 1
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Дата, время"
+          }
+        ]
+      }
+    }
+  ]
+}
+

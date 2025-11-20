@@ -1,0 +1,168 @@
+{
+  "title": "1C Event Log - Temporal Patterns",
+  "uid": "1c-event-log-temporal",
+  "version": 1,
+  "schemaVersion": 38,
+  "tags": ["1c", "event-log", "temporal"],
+  "timezone": "browser",
+  "editable": true,
+  "time": {
+    "from": "now-30d",
+    "to": "now"
+  },
+  "refresh": "5m",
+  "templating": {
+    "list": [
+      {
+        "name": "infobase",
+        "type": "query",
+        "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+        "query": "SELECT DISTINCT infobase_name FROM logs.event_log WHERE infobase_name != '' ORDER BY cluster_name, infobase_name",
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": "$__all"
+        },
+        "includeAll": true,
+        "multi": true,
+        "allValue": null,
+        "saveState": true
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Активность по часам",
+      "type": "barchart",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  toHour(event_time) AS hour,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nGROUP BY hour\nORDER BY hour",
+          "format": 1
+        }
+      ],
+      "options": {
+        "orientation": "vertical",
+        "xField": "hour",
+        "yField": "count",
+        "colorByField": "hour"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Активность по дням недели",
+      "type": "barchart",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  CASE toDayOfWeek(event_time)\n    WHEN 1 THEN 'Понедельник'\n    WHEN 2 THEN 'Вторник'\n    WHEN 3 THEN 'Среда'\n    WHEN 4 THEN 'Четверг'\n    WHEN 5 THEN 'Пятница'\n    WHEN 6 THEN 'Суббота'\n    WHEN 7 THEN 'Воскресенье'\n    ELSE 'Unknown'\n  END AS day_of_week,\n  toDayOfWeek(event_time) AS day_order,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nGROUP BY day_of_week, day_order\nORDER BY day_order",
+          "format": 1
+        }
+      ],
+      "options": {
+        "orientation": "vertical",
+        "xField": "day_of_week",
+        "yField": "count",
+        "colorByField": "day_of_week"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Тепловая карта активности (дни недели × часы)",
+      "type": "heatmap",
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 8},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(event_time), 3600) * 3600) AS time,\n  CASE toDayOfWeek(event_time)\n    WHEN 1 THEN 'Понедельник'\n    WHEN 2 THEN 'Вторник'\n    WHEN 3 THEN 'Среда'\n    WHEN 4 THEN 'Четверг'\n    WHEN 5 THEN 'Пятница'\n    WHEN 6 THEN 'Суббота'\n    WHEN 7 THEN 'Воскресенье'\n    ELSE 'Unknown'\n  END AS day_of_week,\n  toString(toHour(event_time)) AS hour,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nGROUP BY time, day_of_week, hour\nORDER BY time",
+          "format": 0
+        }
+      ],
+      "options": {
+        "calculate": false,
+        "cellGap": 2,
+        "color": {
+          "mode": "spectrum",
+          "scheme": "Spectral"
+        },
+        "yAxis": {
+          "axisPlacement": "left"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Активность по часам (детализация)",
+      "type": "table",
+      "gridPos": {"h": 10, "w": 12, "x": 0, "y": 20},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  toHour(event_time) AS \"Час\",\n  count() AS \"Количество событий\",\n  uniq(user_name) AS \"Уникальных пользователей\",\n  uniq(session_id) AS \"Уникальных сеансов\"\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nGROUP BY \"Час\"\nORDER BY \"Час\"",
+          "format": 1
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": false,
+            "displayName": "Час"
+          }
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "title": "Активность по дням недели (детализация)",
+      "type": "table",
+      "gridPos": {"h": 10, "w": 12, "x": 12, "y": 20},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  CASE toDayOfWeek(event_time)\n    WHEN 1 THEN 'Понедельник'\n    WHEN 2 THEN 'Вторник'\n    WHEN 3 THEN 'Среда'\n    WHEN 4 THEN 'Четверг'\n    WHEN 5 THEN 'Пятница'\n    WHEN 6 THEN 'Суббота'\n    WHEN 7 THEN 'Воскресенье'\n    ELSE 'Unknown'\n  END AS \"День недели\",\n  toDayOfWeek(event_time) AS \"Порядок\",\n  count() AS \"Количество событий\",\n  uniq(user_name) AS \"Уникальных пользователей\",\n  uniq(session_id) AS \"Уникальных сеансов\"\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nGROUP BY \"День недели\", \"Порядок\"\nORDER BY \"Порядок\"",
+          "format": 1
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": false,
+            "displayName": "Порядок"
+          }
+        ]
+      }
+    }
+  ]
+}
+

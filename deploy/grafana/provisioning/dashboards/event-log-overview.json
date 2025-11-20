@@ -1,0 +1,166 @@
+{
+  "title": "1C Event Log - Overview",
+  "uid": "1c-event-log-overview",
+  "version": 1,
+  "schemaVersion": 38,
+  "tags": ["1c", "event-log", "overview"],
+  "timezone": "browser",
+  "editable": true,
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "refresh": "1m",
+  "templating": {
+    "list": [
+      {
+        "name": "infobase",
+        "type": "query",
+        "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+        "query": "SELECT DISTINCT infobase_name FROM logs.event_log WHERE infobase_name != '' ORDER BY cluster_name, infobase_name",
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": "$__all"
+        },
+        "includeAll": true,
+        "multi": true,
+        "allValue": null,
+        "saveState": true
+      },
+      {
+        "name": "time_range",
+        "type": "custom",
+        "query": "24h,1h",
+        "current": {
+          "selected": true,
+          "text": "24h",
+          "value": "24h"
+        },
+        "options": [
+          {"text": "24 hours", "value": "24h", "selected": true},
+          {"text": "1 hour", "value": "1h", "selected": false}
+        ]
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Ошибки",
+      "type": "barchart",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  infobase_name AS infobase,\n  count() AS errors_count\nFROM logs.event_log\nWHERE event_time >= now() - INTERVAL CASE WHEN '$time_range' = '1h' THEN 1 HOUR ELSE 24 HOUR END\n  AND level IN ('Error', 'Ошибка')\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nGROUP BY infobase_name, cluster_name\nORDER BY cluster_name, infobase_name",
+          "format": 1
+        }
+      ],
+      "options": {
+        "orientation": "vertical",
+        "xField": "infobase",
+        "yField": "errors_count",
+        "colorByField": "infobase"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Предупреждения",
+      "type": "barchart",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  infobase_name AS infobase,\n  count() AS warnings_count\nFROM logs.event_log\nWHERE event_time >= now() - INTERVAL CASE WHEN '$time_range' = '1h' THEN 1 HOUR ELSE 24 HOUR END\n  AND level IN ('Warning', 'Предупреждение')\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nGROUP BY infobase_name, cluster_name\nORDER BY cluster_name, infobase_name",
+          "format": 1
+        }
+      ],
+      "options": {
+        "orientation": "vertical",
+        "xField": "infobase",
+        "yField": "warnings_count",
+        "colorByField": "infobase"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Уникальных пользователей",
+      "type": "barchart",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  infobase_name AS infobase,\n  uniq(user_name) AS unique_users\nFROM logs.event_log\nWHERE event_time >= now() - INTERVAL CASE WHEN '$time_range' = '1h' THEN 1 HOUR ELSE 24 HOUR END\n  AND user_name != ''\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nGROUP BY infobase_name, cluster_name\nORDER BY cluster_name, infobase_name",
+          "format": 1
+        }
+      ],
+      "options": {
+        "orientation": "vertical",
+        "xField": "infobase",
+        "yField": "unique_users",
+        "colorByField": "infobase"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Сеансов пользователей",
+      "type": "barchart",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
+          "refId": "A",
+          "queryType": "sql",
+          "rawSql": "SELECT\n  infobase_name AS infobase,\n  uniq(session_id) AS unique_sessions\nFROM logs.event_log\nWHERE event_time >= now() - INTERVAL CASE WHEN '$time_range' = '1h' THEN 1 HOUR ELSE 24 HOUR END\n  AND session_id > 0\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nGROUP BY infobase_name, cluster_name\nORDER BY cluster_name, infobase_name",
+          "format": 1
+        }
+      ],
+      "options": {
+        "orientation": "vertical",
+        "xField": "infobase",
+        "yField": "unique_sessions",
+        "colorByField": "infobase"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          }
+        }
+      }
+    }
+  ]
+}
+

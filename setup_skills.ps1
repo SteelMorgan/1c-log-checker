@@ -48,6 +48,7 @@ $customSkills = @(
     @{Name="1c-bsl"; File="1C_BSL_SKILL.md"},
     @{Name="docker"; File="DOCKER_SKILLS.md"},
     @{Name="go"; File="GO_SKILL.md"},
+    @{Name="grafana-clickhouse-docker"; File="GRAFANA_CLICKHOUSE_DOCKER_SKILL.md"},
     @{Name="mermaid"; File="MERMAID_SKILL.md"},
     @{Name="powershell"; File="POWERSHELL_RULES.md"},
     @{Name="skill-creator-v2"; File="USER_SKILL_RULE_V2.md"},
