@@ -331,7 +331,7 @@ func (r *Reader) processFile(ctx context.Context, filePath string, workerID int)
 	// Create offset callback for periodic saving
 	var offsetCallback func(int64, int64, time.Time) error
 	if r.offsetStore != nil {
-		offsetCallback = func(currentOffset int64, recordsCount int64, lastTimestamp time.Time) error {
+		offsetCallback = func(currentOffset int64, callbackRecordsCount int64, lastTimestamp time.Time) error {
 			// Update tracked offset
 			lastProgressOffset.Store(currentOffset)
 			
@@ -339,7 +339,7 @@ func (r *Reader) processFile(ctx context.Context, filePath string, workerID int)
 				FilePath:      filePath,
 				OffsetBytes:   currentOffset,
 				LastTimestamp: lastTimestamp,
-				RecordsParsed: recordsCount + recordsParsedFromOffset,
+				RecordsParsed: callbackRecordsCount + recordsParsedFromOffset,
 			}
 			if err := r.offsetStore.SaveEventLogOffset(ctx, offset); err != nil {
 				return err
@@ -359,7 +359,7 @@ func (r *Reader) processFile(ctx context.Context, filePath string, workerID int)
 					FileName:       filepath.Base(filePath),
 					FileSizeBytes:  fileSizeBytes,
 					OffsetBytes:    uint64(currentOffset),
-					RecordsParsed:  uint64(recordsCount + recordsParsedFromOffset),
+					RecordsParsed:  uint64(callbackRecordsCount + recordsParsedFromOffset),
 					LastTimestamp:  lastTimestamp,
 				}
 				if err := r.progressCallback(progress); err != nil {
@@ -383,9 +383,11 @@ func (r *Reader) processFile(ctx context.Context, filePath string, workerID int)
 					fileReadingTimeMs = 0
 				}
 				
+				// Use atomic recordsCount to get current value (from reader, not callback parameter)
+				currentRecordsCount := recordsCount.Load()
 				var recordsPerSecond float64
-				if elapsedTimeMs > 0 && recordsCount > 0 {
-					recordsPerSecond = float64(recordsCount) / (float64(elapsedTimeMs) / 1000.0)
+				if elapsedTimeMs > 0 && currentRecordsCount > 0 {
+					recordsPerSecond = float64(currentRecordsCount) / (float64(elapsedTimeMs) / 1000.0)
 				}
 				
 				metrics := &domain.ParserMetrics{
@@ -398,7 +400,7 @@ func (r *Reader) processFile(ctx context.Context, filePath string, workerID int)
 					FilePath:            filePath,
 					FileName:            filepath.Base(filePath),
 					FilesProcessed:      1,
-					RecordsParsed:       uint64(recordsCount + recordsParsedFromOffset),
+					RecordsParsed:       currentRecordsCount + uint64(recordsParsedFromOffset),
 					ParsingTimeMs:       elapsedTimeMs,
 					RecordsPerSecond:    recordsPerSecond,
 					StartTime:           fileOpenStartTime,

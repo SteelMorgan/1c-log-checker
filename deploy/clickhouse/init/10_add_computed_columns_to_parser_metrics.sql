@@ -14,7 +14,17 @@ SELECT
     -- Time range
     start_time,
     end_time,
+    -- CRITICAL: Total time calculation
+    -- In streaming mode, FileReadingTimeMs and RecordParsingTimeMs overlap
+    -- So we use: max(ParsingTimeMs, FileReadingTimeMs + RecordParsingTimeMs) + DeduplicationTimeMs + WritingTimeMs
+    -- OR simpler: ParsingTimeMs + DeduplicationTimeMs + WritingTimeMs
+    -- But ParsingTimeMs already includes FileReadingTimeMs and RecordParsingTimeMs (they overlap)
+    -- So total_time = ParsingTimeMs + DeduplicationTimeMs + WritingTimeMs
+    -- However, DeduplicationTimeMs and WritingTimeMs happen AFTER parsing (sequential)
+    -- So the correct formula is:
     (parsing_time_ms + deduplication_time_ms + writing_time_ms) AS total_time_ms,
+    -- Alternative calculation for verification:
+    (file_reading_time_ms + record_parsing_time_ms + deduplication_time_ms + writing_time_ms) AS total_time_alternative_ms,
     
     -- Records statistics
     records_parsed,

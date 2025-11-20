@@ -393,11 +393,23 @@ func (s *ParserService) createDirectReader(location logreader.LogLocation, clust
 	// Note: We use context.Background() because metrics are written asynchronously during file parsing
 	// and we don't have access to the request context here
 	// Metrics are written to parser_metrics table with parser_type='event_log'
+	// Called both incrementally (every 100000 records) and at file completion
 	var metricsCallback eventlog.FileMetricsCallback
 	if s.writer != nil && !s.cfg.ReadOnly {
 		metricsCallback = func(metrics *domain.ParserMetrics) error {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			// CRITICAL: Flush all pending batches before writing metrics
+			// This ensures that all records are written and metrics are accumulated
+			// This is important for both incremental and final metrics
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
+			if err := s.writer.Flush(ctx); err != nil {
+				log.Warn().
+					Err(err).
+					Str("file_path", metrics.FilePath).
+					Uint64("records_parsed", metrics.RecordsParsed).
+					Msg("Failed to flush batches before writing metrics, continuing anyway")
+			}
+			// Now write metrics with accumulated values
 			err := s.writer.WriteParserMetrics(ctx, metrics)
 			if err != nil {
 				log.Error().

@@ -28,6 +28,7 @@ func ensureValidDateTime(t time.Time) time.Time {
 	return t
 }
 
+
 // ClickHouseWriter writes records to ClickHouse in batches
 type ClickHouseWriter struct {
 	conn     clickhouse.Conn
@@ -143,18 +144,90 @@ func (w *ClickHouseWriter) WriteParserMetrics(ctx context.Context, metrics *doma
 	// Works for both event_log and tech_log parsers
 	w.metricsMutex.Lock()
 	
+	// Save accumulated metrics to local variables before unlocking
+	writingRecordsCount := w.writingRecordsCount
+	writingTimeAccumulator := w.writingTimeAccumulator
+	deduplicationRecordsCount := w.deduplicationRecordsCount
+	deduplicationTimeAccumulator := w.deduplicationTimeAccumulator
+	
+	w.metricsMutex.Unlock()
+	
 	// Enrich DeduplicationTimeMs if not set and deduplication is enabled
-	if metrics.DeduplicationTimeMs == 0 && w.cfg.EnableDeduplication && w.deduplicationRecordsCount > 0 {
+	// CRITICAL: Use current accumulated metrics at the time of WriteParserMetrics call
+	// This ensures we use metrics that have been accumulated up to this point
+	if metrics.DeduplicationTimeMs == 0 && w.cfg.EnableDeduplication && deduplicationRecordsCount > 0 {
 		// Calculate average deduplication time per record and scale to current batch
-		avgDedupTimePerRecord := w.deduplicationTimeAccumulator / time.Duration(w.deduplicationRecordsCount)
+		avgDedupTimePerRecord := deduplicationTimeAccumulator / time.Duration(deduplicationRecordsCount)
 		metrics.DeduplicationTimeMs = uint64(avgDedupTimePerRecord.Milliseconds() * int64(metrics.RecordsParsed))
 	}
 	
 	// Enrich WritingTimeMs if not set and we have accumulated writing metrics
-	if metrics.WritingTimeMs == 0 && w.writingRecordsCount > 0 {
-		// Calculate average writing time per record and scale to current batch
-		avgWritingTimePerRecord := w.writingTimeAccumulator / time.Duration(w.writingRecordsCount)
-		metrics.WritingTimeMs = uint64(avgWritingTimePerRecord.Milliseconds() * int64(metrics.RecordsParsed))
+	// CRITICAL: Use current accumulated metrics at the time of WriteParserMetrics call
+	// This ensures we use metrics that have been accumulated up to this point
+	if metrics.WritingTimeMs == 0 {
+		if writingRecordsCount > 0 {
+			// Calculate average writing time per record and scale to current batch
+			// CRITICAL: Use nanoseconds to avoid precision loss when converting to milliseconds
+			// Calculate: (total_nanoseconds / records_count) * records_parsed / 1_000_000
+			avgWritingTimePerRecordNs := writingTimeAccumulator.Nanoseconds() / int64(writingRecordsCount)
+			calculatedWritingTimeNs := avgWritingTimePerRecordNs * int64(metrics.RecordsParsed)
+			calculatedWritingTime := uint64(calculatedWritingTimeNs / 1_000_000) // Convert nanoseconds to milliseconds
+			
+			log.Info().
+				Str("file_path", metrics.FilePath).
+				Uint64("writing_records_count", writingRecordsCount).
+				Dur("writing_time_accumulator", writingTimeAccumulator).
+				Int64("avg_writing_time_per_record_ns", avgWritingTimePerRecordNs).
+				Uint64("records_parsed", metrics.RecordsParsed).
+				Int64("calculated_writing_time_ns", calculatedWritingTimeNs).
+				Uint64("calculated_writing_time_ms", calculatedWritingTime).
+				Msg("Enriching WritingTimeMs from accumulated metrics")
+			if calculatedWritingTime == 0 && metrics.RecordsParsed > 0 {
+				// For very small writing times, use minimum 1ms to avoid zero
+				// This is acceptable for small files, but should not happen for large files
+				if metrics.RecordsParsed < 1000 {
+					metrics.WritingTimeMs = 1
+					log.Debug().
+						Str("file_path", metrics.FilePath).
+						Uint64("records_parsed", metrics.RecordsParsed).
+						Msg("Small file: calculated writing time is 0, using fallback 1ms")
+				} else {
+					// For large files, this is suspicious - log warning but use 1ms as fallback
+					log.Warn().
+						Str("file_path", metrics.FilePath).
+						Uint64("records_parsed", metrics.RecordsParsed).
+						Uint64("writing_records_count", writingRecordsCount).
+						Int64("calculated_writing_time_ns", calculatedWritingTimeNs).
+						Msg("WARNING: Large file but calculated writing time is 0 - using fallback 1ms")
+					metrics.WritingTimeMs = 1
+				}
+			} else {
+				metrics.WritingTimeMs = calculatedWritingTime
+			}
+		} else {
+			// CRITICAL: No accumulated metrics - this means batches haven't been written yet
+			// This is a problem - we should have metrics by the time WriteParserMetrics is called
+			// For small files (< 1000 records), use fallback 1ms (acceptable)
+			// For large files (>= 1000 records), keep 0 to indicate missing data (critical issue)
+			if metrics.RecordsParsed < 1000 {
+				// Small files: acceptable to use fallback
+				metrics.WritingTimeMs = 1
+				log.Debug().
+					Str("file_path", metrics.FilePath).
+					Uint64("records_parsed", metrics.RecordsParsed).
+					Msg("Small file: using fallback 1ms for writing_time_ms (acceptable)")
+			} else {
+				// Large files: CRITICAL - should have real metrics
+				log.Warn().
+					Str("file_path", metrics.FilePath).
+					Uint64("records_parsed", metrics.RecordsParsed).
+					Uint64("parsing_time_ms", metrics.ParsingTimeMs).
+					Uint64("writing_records_count", writingRecordsCount).
+					Dur("writing_time_accumulator", writingTimeAccumulator).
+					Msg("CRITICAL: Large file but no accumulated writing metrics found - batches may not have been written yet. WritingTimeMs will be 0.")
+				// DO NOT set fallback value - keep it 0 to indicate missing data
+			}
+		}
 	}
 	
 	// Enrich FileReadingTimeMs if not set or if it's a minimal placeholder value (1ms)
@@ -180,7 +253,48 @@ func (w *ClickHouseWriter) WriteParserMetrics(ctx context.Context, metrics *doma
 		}
 	}
 	
-	w.metricsMutex.Unlock()
+	// CRITICAL: Verify time coverage - check that all times cover the entire process
+	// Total time should be: FileReadingTimeMs + RecordParsingTimeMs + DeduplicationTimeMs + WritingTimeMs
+	// But in streaming mode, FileReadingTimeMs and RecordParsingTimeMs overlap, so:
+	// ParsingTimeMs ≈ max(FileReadingTimeMs, RecordParsingTimeMs) or FileReadingTimeMs + RecordParsingTimeMs
+	// Total process time = ParsingTimeMs + DeduplicationTimeMs + WritingTimeMs (if sequential)
+	// OR Total process time = max(ParsingTimeMs, DeduplicationTimeMs + WritingTimeMs) (if parallel)
+	calculatedTotalTime := metrics.FileReadingTimeMs + metrics.RecordParsingTimeMs + metrics.DeduplicationTimeMs + metrics.WritingTimeMs
+	parsingBasedTotalTime := metrics.ParsingTimeMs + metrics.DeduplicationTimeMs + metrics.WritingTimeMs
+	
+	// Log time coverage analysis
+	log.Info().
+		Str("file_path", metrics.FilePath).
+		Uint64("parsing_time_ms", metrics.ParsingTimeMs).
+		Uint64("file_reading_time_ms", metrics.FileReadingTimeMs).
+		Uint64("record_parsing_time_ms", metrics.RecordParsingTimeMs).
+		Uint64("deduplication_time_ms", metrics.DeduplicationTimeMs).
+		Uint64("writing_time_ms", metrics.WritingTimeMs).
+		Uint64("calculated_total_time", calculatedTotalTime).
+		Uint64("parsing_based_total_time", parsingBasedTotalTime).
+		Int64("time_coverage_diff", int64(calculatedTotalTime) - int64(parsingBasedTotalTime)).
+		Msg("Time coverage analysis - verifying all times cover the entire process")
+	
+	// Warn if times don't make sense
+	if metrics.ParsingTimeMs > 0 && calculatedTotalTime < metrics.ParsingTimeMs {
+		log.Warn().
+			Str("file_path", metrics.FilePath).
+			Uint64("parsing_time_ms", metrics.ParsingTimeMs).
+			Uint64("calculated_total_time", calculatedTotalTime).
+			Msg("WARNING: Calculated total time is less than parsing time - times may not cover the entire process")
+	}
+	
+	// In streaming mode, FileReadingTimeMs and RecordParsingTimeMs overlap
+	// So FileReadingTimeMs + RecordParsingTimeMs can be > ParsingTimeMs
+	// This is expected and correct
+	if metrics.FileReadingTimeMs + metrics.RecordParsingTimeMs > metrics.ParsingTimeMs && metrics.ParsingTimeMs > 0 {
+		log.Debug().
+			Str("file_path", metrics.FilePath).
+			Uint64("file_reading_time_ms", metrics.FileReadingTimeMs).
+			Uint64("record_parsing_time_ms", metrics.RecordParsingTimeMs).
+			Uint64("parsing_time_ms", metrics.ParsingTimeMs).
+			Msg("FileReadingTimeMs + RecordParsingTimeMs > ParsingTimeMs (expected in streaming mode - times overlap)")
+	}
 	
 	// CRITICAL: Delete old record for this file before inserting new one
 	// ReplacingMergeTree replaces records only during merge (async), so we need to delete explicitly
@@ -638,10 +752,25 @@ func (w *ClickHouseWriter) flushEventLogSnapshot(ctx context.Context, batchSnaps
 	
 	// Accumulate metrics for reporting (thread-safe)
 	w.metricsMutex.Lock()
+	oldWritingRecordsCount := w.writingRecordsCount
+	oldWritingTimeAccumulator := w.writingTimeAccumulator
+	
 	w.deduplicationTimeAccumulator += deduplicationTime
 	w.writingTimeAccumulator += writingTime
 	w.deduplicationRecordsCount += uint64(len(batchSnapshot))
 	w.writingRecordsCount += uint64(len(recordsToWrite))
+	
+	// Log metrics accumulation for debugging
+	log.Info().
+		Int("records_written", len(recordsToWrite)).
+		Dur("writing_time", writingTime).
+		Uint64("old_writing_records_count", oldWritingRecordsCount).
+		Uint64("new_writing_records_count", w.writingRecordsCount).
+		Dur("old_writing_time_accumulator", oldWritingTimeAccumulator).
+		Dur("new_writing_time_accumulator", w.writingTimeAccumulator).
+		Dur("added_writing_time", writingTime).
+		Msg("Accumulated writing metrics (event_log)")
+	
 	w.metricsMutex.Unlock()
 	
 	logEntry := log.Info().
