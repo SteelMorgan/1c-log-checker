@@ -265,7 +265,7 @@ func (w *EnrichmentWorker) enrichMetadata(ctx context.Context) (int, error) {
 		}
 
 		// Step 2: Check cache
-		cachedPresentations := make(map[uuid.UUID]string)
+		// TODO: Implement cache check for metadata presentations
 		needResolve := make([]uuid.UUID, 0)
 
 		// Similar logic as for users...
@@ -399,7 +399,7 @@ func (w *EnrichmentWorker) writeCachedUserMappings(ctx context.Context, infobase
 		(infobase_guid, user_guid, user_name, sync_timestamp, version)
 		VALUES (?, ?, ?, ?, ?)`
 
-	batch, err := w.chClient.PrepareBatch(ctx, query)
+	batch, err := w.chClient.Conn().PrepareBatch(ctx, query)
 	if err != nil {
 		return fmt.Errorf("failed to prepare batch: %w", err)
 	}
@@ -440,7 +440,7 @@ func (w *EnrichmentWorker) writeResolvedUserMappings(ctx context.Context, infoba
 		(infobase_guid, user_guid, user_name, sync_timestamp, version)
 		VALUES (?, ?, ?, ?, ?)`
 
-	batch, err := w.chClient.PrepareBatch(ctx, query)
+	batch, err := w.chClient.Conn().PrepareBatch(ctx, query)
 	if err != nil {
 		return fmt.Errorf("failed to prepare batch: %w", err)
 	}
