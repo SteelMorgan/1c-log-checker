@@ -217,19 +217,6 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) error {
 			},
 		},
 		{
-			Name:        "logc_get_new_errors_aggregated",
-			Description: "Get new errors that appeared in the last period",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"cluster_guid":  map[string]interface{}{"type": "string"},
-					"infobase_guid": map[string]interface{}{"type": "string"},
-					"limit":         map[string]interface{}{"type": "integer"},
-				},
-				"required": []string{"cluster_guid", "infobase_guid"},
-			},
-		},
-		{
 			Name:        "logc_configure_techlog",
 			Description: "Configure technological journal logcfg.xml",
 			InputSchema: map[string]interface{}{
@@ -328,8 +315,6 @@ func (m *MCPProtocol) handleToolCall(ctx context.Context, req *MCPRequest) error
 		result, err = m.handleGetEventLogTool(ctx, callReq.Arguments)
 	case "logc_get_tech_log":
 		result, err = m.handleGetTechLogTool(ctx, callReq.Arguments)
-	case "logc_get_new_errors_aggregated":
-		result, err = m.handleGetNewErrorsTool(ctx, callReq.Arguments)
 	case "logc_configure_techlog":
 		result, err = m.handleConfigureTechLogTool(ctx, callReq.Arguments)
 	case "logc_save_techlog":
@@ -456,22 +441,6 @@ func (m *MCPProtocol) handleGetTechLogTool(ctx context.Context, args map[string]
 	}
 
 	return m.server.techLogHandler.GetTechLog(ctx, params)
-}
-
-func (m *MCPProtocol) handleGetNewErrorsTool(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-	params := handlers.NewErrorsParams{}
-
-	if v, ok := args["cluster_guid"].(string); ok {
-		params.ClusterGUID = v
-	}
-	if v, ok := args["infobase_guid"].(string); ok {
-		params.InfobaseGUID = v
-	}
-	if v, ok := args["limit"].(float64); ok {
-		params.Limit = int(v)
-	}
-
-	return m.server.newErrorsHandler.GetNewErrorsAggregated(ctx, params)
 }
 
 func (m *MCPProtocol) handleConfigureTechLogTool(ctx context.Context, args map[string]interface{}) (interface{}, error) {

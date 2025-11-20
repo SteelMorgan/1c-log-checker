@@ -25,10 +25,6 @@ type Config struct {
 	MaxWorkers          int  // Max parallel workers for file processing (default: 4)
 	BatchSize           int  // Batch size for ClickHouse inserts (default: 5000)
 	BatchFlushTimeout   int  // Batch flush timeout in milliseconds (default: 1000)
-	
-	// New errors aggregation worker settings
-	NewErrorsUpdateInterval int // Update interval in minutes (default: 10)
-	NewErrorsHours          int // Time window for error analysis in hours (default: 48)
 
 	// MCP settings
 	MCPPort       int
@@ -69,9 +65,6 @@ func Load() (*Config, error) {
 		MaxWorkers:          getEnvInt("MAX_WORKERS", 4),
 		BatchSize:           getEnvInt("BATCH_SIZE", 5000),
 		BatchFlushTimeout:   getEnvInt("BATCH_FLUSH_TIMEOUT", 1000),
-		
-		NewErrorsUpdateInterval: getEnvInt("NEW_ERRORS_UPDATE_INTERVAL", 10), // minutes
-		NewErrorsHours:          getEnvInt("NEW_ERRORS_HOURS", 48),            // hours
 
 		MCPPort:       getEnvInt("MCP_PORT", 8080),
 		ClusterMapPath: getEnv("CLUSTER_MAP_PATH", "configs/cluster_map.yaml"),

@@ -88,38 +88,6 @@
       }
     },
     {
-      "name": "logc_get_new_errors_aggregated",
-      "description": "Get aggregated statistics of ALL new errors from both event log (Журнал регистрации) and technical log (Технологический журнал) with deduplication.\n\n⚠️ CRITICAL: Before calling this tool, agent MUST read GUIDs from './configs/cluster_map.yaml' file:\n1. Read './configs/cluster_map.yaml' using the Read tool\n2. Extract cluster_guid from the 'clusters' section\n3. Extract infobase_guid from the 'infobases' section\n4. Use these exact GUID values in your tool call (NEVER use placeholder values)\n\nThis tool:\n- Queries aggregated errors from BOTH sources:\n  * event_log: level = 'Error'\n  * tech_log: level IN ('ERROR', 'EXCP')\n- Uses error deduplication by error signature (sipHash64)\n- Combines errors from both sources if they have the same signature\n- Returns statistics: occurrences count, first_seen, last_seen timestamps\n- Includes sample log lines for each unique error\n- Shows source(s) for each error: [\"event_log\"], [\"tech_log\"], or [\"event_log\", \"tech_log\"]\n- Analyzes errors from last 48 hours by default\n\nDifference from other tools:\n- logc_get_event_log: returns individual event log records (raw)\n- logc_get_tech_log: returns individual tech log records (raw)\n- logc_get_new_errors_aggregated: returns aggregated error statistics from BOTH sources with deduplication\n\nThis tool is optimal for:\n- Quick overview of ALL unique errors with occurrence counts\n- Identifying most frequent error patterns across both log types\n- Error trend analysis with time ranges\n- Initial error investigation before deep dive\n\nExample workflow:\n1. Read configs/cluster_map.yaml\n2. Extract GUIDs\n3. Call: logc_get_new_errors_aggregated(cluster_guid='<from-config>', infobase_guid='<from-config>', hours=48, limit=50)\n4. For detailed context on specific error → use logc_get_event_log or logc_get_tech_log with specific timeframe",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "cluster_guid": {
-            "type": "string",
-            "description": "Cluster GUID (MUST be obtained from './configs/cluster_map.yaml' file). Agent MUST read this file first and extract GUID from 'clusters' section. NEVER use placeholder values."
-          },
-          "infobase_guid": {
-            "type": "string",
-            "description": "Infobase GUID (MUST be obtained from './configs/cluster_map.yaml' file). Agent MUST read this file first and extract GUID from 'infobases' section. NEVER use placeholder values."
-          },
-          "hours": {
-            "type": "integer",
-            "description": "Time window in hours to analyze. Default: 48 hours.",
-            "default": 48,
-            "minimum": 1,
-            "maximum": 168
-          },
-          "limit": {
-            "type": "integer",
-            "description": "Maximum number of aggregated errors to return. Default: 100.",
-            "default": 100,
-            "minimum": 1,
-            "maximum": 1000
-          }
-        },
-        "required": ["cluster_guid", "infobase_guid"]
-      }
-    },
-    {
       "name": "logc_configure_techlog",
       "description": "Generate logcfg.xml configuration for 1C technical log.\n\n⚠️ CRITICAL: Before calling this tool, agent MUST read GUIDs from './configs/cluster_map.yaml' file:\n1. Read './configs/cluster_map.yaml' using the Read tool\n2. Extract cluster_guid from the 'clusters' section\n3. Extract infobase_guid from the 'infobases' section\n4. Use these exact GUID values in your tool call (NEVER use placeholder values)\n\nThis tool creates XML configuration content that can be saved to logcfg.xml file to enable technical logging.\n\nIMPORTANT: The 'location' attribute in config XML MUST follow the pattern:\n<base_path>/<cluster_guid>/<infobase_guid>\n\nExample:\n<log location=\"D:\\TechLogs\\b0881663-f2a7-4195-b7a2-f7f8e6c3a8f3\\d723aefd-7992-420d-b5f9-a273fd4146be\">\n\nThe tool will validate this structure and return an error if it doesn't match.\n\nCommon use cases:\n- Error tracking: events=['EXCP', 'QERR', 'EXCPCNTX']\n- Performance analysis: events=['DBMSSQL', 'SDBL'], properties=['sql', 'planSQLText', 'duration', 'Rows']\n- Lock investigation: events=['TLOCK', 'TTIMEOUT', 'TDEADLOCK', 'CONN', 'SESN']\n\nIMPORTANT: Technical logging generates large files. Always:\n- Set reasonable history (12-48 hours max)\n- Enable only needed events\n- Disable logging after debugging (use disable_techlog)\n\nExample workflow:\n1. Read './configs/cluster_map.yaml' to get cluster_guid and infobase_guid\n2. Call: configure_techlog(cluster_guid='...', infobase_guid='...', location='D:\\\\TechLogs\\\\<cluster_guid>\\\\<infobase_guid>', history=24, events=['EXCP', 'QERR'], properties=['all'])\n3. Save returned XML to: C:\\\\Program Files\\\\1cv8\\\\conf\\\\logcfg.xml\n4. Restart 1C services to apply\n5. After debugging → call disable_techlog",
       "inputSchema": {

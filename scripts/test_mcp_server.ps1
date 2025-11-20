@@ -153,18 +153,5 @@ if ($techLogResult) {
     Write-Host "✓ Запрос выполнен" -ForegroundColor Green
 }
 
-# 6. Тест get_new_errors (если ClickHouse доступен)
-Write-Host "`n=== 6. Тест get_new_errors ===" -ForegroundColor Cyan
-$newErrorsBody = @{
-    cluster_guid = $testClusterGUID
-    infobase_guid = $testInfobaseGUID
-    limit = 10
-}
-
-$newErrorsResult = Invoke-MCPRequest -Endpoint "/tools/get_new_errors" -Body $newErrorsBody
-if ($newErrorsResult) {
-    Write-Host "✓ Запрос выполнен" -ForegroundColor Green
-}
-
 Write-Host "`n=== Тестирование завершено ===" -ForegroundColor Cyan
 

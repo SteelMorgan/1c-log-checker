@@ -80,16 +80,7 @@ $getEventLogBody = @{
 }
 Test-Tool -ToolName "get_event_log" -Body $getEventLogBody
 
-# Test 5: get_new_errors (last 24h)
-$getNewErrorsBody = @{
-    cluster_guid = $ClusterGUID
-    infobase_guid = $InfobaseGUID
-    hours = 24
-    limit = 10
-}
-Test-Tool -ToolName "get_new_errors" -Body $getNewErrorsBody
-
-# Test 6: disable_techlog
+# Test 5: disable_techlog
 Write-Host ""
 Write-Host "Skipping disable_techlog test (would disable tech log)" -ForegroundColor Yellow
 # Uncomment to test:

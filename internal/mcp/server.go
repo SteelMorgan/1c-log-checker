@@ -26,7 +26,6 @@ type Server struct {
 	// Handlers
 	eventLogHandler           *handlers.EventLogHandler
 	techLogHandler            *handlers.TechLogHandler
-	newErrorsHandler          *handlers.NewErrorsHandler
 	configureTechHandler      *handlers.ConfigureTechLogHandler
 	saveTechHandler           *handlers.SaveTechLogHandler
 	restoreTechHandler        *handlers.RestoreTechLogHandler
@@ -68,7 +67,6 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	// Initialize handlers
 	eventLogHandler := handlers.NewEventLogHandler(chClient, clusterMap)
 	techLogHandler := handlers.NewTechLogHandler(chClient, clusterMap)
-	newErrorsHandler := handlers.NewNewErrorsHandler(chClient)
 	configureTechHandler := handlers.NewConfigureTechLogHandler(cfg.TechLogConfigDir, cfg.TechLogDirs)
 	saveTechHandler := handlers.NewSaveTechLogHandler(cfg.TechLogConfigDir)
 	restoreTechHandler := handlers.NewRestoreTechLogHandler(cfg.TechLogConfigDir)
@@ -82,7 +80,6 @@ func NewServer(cfg *config.Config) (*Server, error) {
 		clusterMap:                clusterMap,
 		eventLogHandler:           eventLogHandler,
 		techLogHandler:            techLogHandler,
-		newErrorsHandler:          newErrorsHandler,
 		configureTechHandler:      configureTechHandler,
 		saveTechHandler:           saveTechHandler,
 		restoreTechHandler:        restoreTechHandler,
@@ -116,7 +113,6 @@ func (s *Server) startHTTP(ctx context.Context) error {
 	// Register tool endpoints
 	mux.HandleFunc("/tools/logc_get_event_log", s.handleGetEventLog)
 	mux.HandleFunc("/tools/logc_get_tech_log", s.handleGetTechLog)
-	mux.HandleFunc("/tools/logc_get_new_errors_aggregated", s.handleGetNewErrorsAggregated)
 	mux.HandleFunc("/tools/logc_configure_techlog", s.handleConfigureTechLog)
 	mux.HandleFunc("/tools/logc_save_techlog", s.handleSaveTechLog)
 	mux.HandleFunc("/tools/logc_restore_techlog", s.handleRestoreTechLog)
@@ -306,55 +302,6 @@ func (s *Server) handleGetTechLog(w http.ResponseWriter, r *http.Request) {
 		}
 
 		log.Error().Err(err).Msg("Failed to get tech log")
-		http.Error(w, fmt.Sprintf("Internal error: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	// Return result
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(result))
-}
-
-func (s *Server) handleGetNewErrorsAggregated(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Parse JSON request body
-	var req struct {
-		ClusterGUID  string `json:"cluster_guid"`
-		InfobaseGUID string `json:"infobase_guid"`
-		Hours        int    `json:"hours,omitempty"`
-		Limit        int    `json:"limit,omitempty"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
-		return
-	}
-
-	// Build parameters
-	params := handlers.NewErrorsParams{
-		ClusterGUID:  req.ClusterGUID,
-		InfobaseGUID: req.InfobaseGUID,
-		Hours:        req.Hours,
-		Limit:        req.Limit,
-	}
-
-	// Call handler
-	result, err := s.newErrorsHandler.GetNewErrorsAggregated(r.Context(), params)
-	if err != nil {
-		// Check if it's a validation error
-		if valErr, ok := err.(*handlers.ValidationError); ok {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(valErr)
-			return
-		}
-
-		log.Error().Err(err).Msg("Failed to get new errors aggregated")
 		http.Error(w, fmt.Sprintf("Internal error: %v", err), http.StatusInternalServerError)
 		return
 	}

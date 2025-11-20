@@ -54,7 +54,6 @@ TRUNCATE TABLE IF EXISTS logs.event_log;
 TRUNCATE TABLE IF EXISTS logs.tech_log;
 TRUNCATE TABLE IF EXISTS logs.parser_metrics;
 TRUNCATE TABLE IF EXISTS logs.file_reading_progress;
-TRUNCATE TABLE IF EXISTS logs.mv_new_errors;
 "@
     
     Write-Host "Cleaning tables via docker exec..." -ForegroundColor Gray
@@ -131,7 +130,7 @@ while ($retryCount -lt $maxRetries -and -not $clickhouseReady) {
 
 if ($clickhouseReady) {
     Write-Host "Verifying tables are clean..." -ForegroundColor Gray
-    $verifyQuery = "SELECT 'event_log' as table_name, count() as count FROM logs.event_log UNION ALL SELECT 'tech_log', count() FROM logs.tech_log UNION ALL SELECT 'parser_metrics', count() FROM logs.parser_metrics UNION ALL SELECT 'file_reading_progress', count() FROM logs.file_reading_progress UNION ALL SELECT 'mv_new_errors', count() FROM logs.mv_new_errors FORMAT CSV"
+    $verifyQuery = "SELECT 'event_log' as table_name, count() as count FROM logs.event_log UNION ALL SELECT 'tech_log', count() FROM logs.tech_log UNION ALL SELECT 'parser_metrics', count() FROM logs.parser_metrics UNION ALL SELECT 'file_reading_progress', count() FROM logs.file_reading_progress FORMAT CSV"
     $result = docker exec $containerName clickhouse-client --query $verifyQuery 2>&1
     
     if ($LASTEXITCODE -eq 0) {

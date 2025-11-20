@@ -26,7 +26,6 @@
 ### ClickHouse Schema (100%)
 - ✅ Таблица event_log (17+ полей, соответствие UI конфигуратора)
 - ✅ Таблица tech_log (динамические свойства через Nested)
-- ✅ Материализованное представление mv_new_errors
 - ✅ Партиционирование по дням, TTL, индексы
 
 ### Go Parser (95%)
@@ -48,7 +47,7 @@
 - ✅ 6 tool endpoints (/tools/get_event_log, etc.)
 - ✅ ClickHouse client wrapper
 - ✅ Cluster map loading
-- ✅ Handlers: event_log, tech_log, new_errors
+- ✅ Handlers: event_log, tech_log
 - ✅ Handlers: configure_techlog, disable_techlog, get_techlog_config
 - ✅ Graceful shutdown
 - ✅ HTTP request parsing (JSON body parsing реализован во всех handlers)
@@ -130,7 +129,6 @@
 │   ├── clickhouse/init/
 │   │   ├── 01_create_event_log.sql   ✅
 │   │   ├── 02_create_tech_log.sql    ✅
-│   │   └── 04_create_new_errors.sql  ✅
 │   └── grafana/provisioning/
 │       ├── datasources/              ✅
 │       └── dashboards/               ✅ (2/4)

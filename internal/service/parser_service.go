@@ -141,17 +141,6 @@ func (s *ParserService) Start(ctx context.Context) error {
 		}(dir)
 	}
 	
-	// Start new errors aggregation worker (if not in read-only mode)
-	if !s.cfg.ReadOnly && s.chConn != nil {
-		s.wg.Add(1)
-		go func() {
-			defer s.wg.Done()
-			interval := time.Duration(s.cfg.NewErrorsUpdateInterval) * time.Minute
-			worker := NewNewErrorsWorker(s.chConn, interval, s.cfg.NewErrorsHours)
-			worker.Start(ctx)
-		}()
-	}
-	
 	log.Info().Msg("Parser service workers started")
 	
 	// Wait for context cancellation
