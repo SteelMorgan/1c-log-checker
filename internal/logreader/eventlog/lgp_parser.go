@@ -498,9 +498,12 @@ func (p *LgpParser) parseRecord(line string) (*domain.EventLogRecord, error) {
 					Time("assigned_datetime", record.TransactionDateTime).
 					Msg("DEBUG: Assigned transaction datetime to record")
 			} else {
+				// Log when transaction is {0,0} - this is normal for some events, but worth tracking
 				log.Debug().
+					Str("event", record.Event).
+					Str("event_time", record.EventTime.Format("2006-01-02 15:04:05")).
 					Time("default_datetime", record.TransactionDateTime).
-					Msg("DEBUG: Transaction datetime is zero, keeping default (1980-01-01)")
+					Msg("DEBUG: Transaction datetime is zero (from {0,0}), keeping default (1980-01-01)")
 			}
 			record.TransactionNumber = transactionNumber
 			record.ConnectionID = connectionID

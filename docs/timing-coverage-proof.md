@@ -170,10 +170,7 @@ log.Info().
 ```sql
 -- Общее время процесса
 SELECT 
-    parsing_time_ms + deduplication_time_ms + writing_time_ms AS total_time_ms,
-    file_reading_time_ms + record_parsing_time_ms + deduplication_time_ms + writing_time_ms AS total_time_alternative_ms
+    parsing_time_ms + deduplication_time_ms + writing_time_ms AS total_time_ms
 FROM logs.parser_metrics_extended
 ```
-
-Оба расчета должны быть близки (разница из-за пересечения FileReadingTimeMs и RecordParsingTimeMs в streaming mode).
 

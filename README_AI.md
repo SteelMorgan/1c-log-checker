@@ -102,6 +102,8 @@ docker-compose up -d
 docker ps
 ```
 
+Файлы логов (если включены) хранятся в каталоге /logs/
+
 **Сервисы:**
 - **ClickHouse:** http://localhost:8123/play
 - **Grafana:** http://localhost:3000 (без авторизации по умолчанию)

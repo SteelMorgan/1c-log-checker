@@ -18,7 +18,9 @@ CREATE TABLE IF NOT EXISTS logs.tech_log (
     call_id UInt64 CODEC(T64, ZSTD),
     -- Cluster/Infobase identification (extracted from log path or config)
     cluster_guid String CODEC(ZSTD),
+    cluster_name String CODEC(ZSTD),  -- Имя кластера (из 1CV8Clst.lst)
     infobase_guid String CODEC(ZSTD),
+    infobase_name String CODEC(ZSTD),  -- Имя информационной базы (из 1CV8Clst.lst)
     -- Raw log line for forensics
     raw_line String CODEC(ZSTD),
     

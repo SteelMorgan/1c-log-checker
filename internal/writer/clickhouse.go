@@ -643,23 +643,71 @@ func (w *ClickHouseWriter) flushEventLogSnapshot(ctx context.Context, batchSnaps
 		// (duplicates within batch are also considered duplicates)
 		if len(records) > 1 {
 			// Multiple records with same hash in batch - skip duplicates
+			// CRITICAL: Log detailed comparison to understand why records are considered duplicates
+			firstRecord := records[0]
+			log.Warn().
+				Str("hash", hash).
+				Int("duplicate_count", len(records)-1).
+				Str("first_event_time", firstRecord.EventTime.Format("2006-01-02 15:04:05.000000")).
+				Str("first_transaction_datetime", firstRecord.TransactionDateTime.Format("2006-01-02 15:04:05.000000")).
+				Str("first_event", firstRecord.Event).
+				Str("first_level", firstRecord.Level).
+				Str("first_cluster_guid", firstRecord.ClusterGUID).
+				Str("first_infobase_guid", firstRecord.InfobaseGUID).
+				Str("first_user", firstRecord.UserName).
+				Str("first_computer", firstRecord.Computer).
+				Uint64("first_session_id", firstRecord.SessionID).
+				Uint64("first_connection_id", firstRecord.ConnectionID).
+				Str("first_transaction_id", firstRecord.TransactionID).
+				Int64("first_transaction_number", firstRecord.TransactionNumber).
+				Str("first_comment", firstRecord.Comment).
+				Str("first_data", firstRecord.Data).
+				Msg("CRITICAL: Found duplicate records in batch - comparing details")
+			
 			for i := 1; i < len(records); i++ {
+				dupRecord := records[i]
 				skippedCount++
 				skippedReasons["duplicate_in_batch"]++
 				skippedInfo := map[string]interface{}{
 					"reason":          "duplicate_in_batch",
 					"hash":            hash,
-					"event_time":      records[i].EventTime.Format("2006-01-02 15:04:05"),
-					"transaction_datetime": records[i].TransactionDateTime.Format("2006-01-02 15:04:05"),
-					"event":           records[i].Event,
-					"level":           records[i].Level,
+					"event_time":      dupRecord.EventTime.Format("2006-01-02 15:04:05"),
+					"transaction_datetime": dupRecord.TransactionDateTime.Format("2006-01-02 15:04:05"),
+					"event":           dupRecord.Event,
+					"level":           dupRecord.Level,
 				}
 				skippedRecords = append(skippedRecords, skippedInfo)
-				log.Debug().
+				
+				// Detailed comparison log
+				log.Warn().
 					Str("hash", hash).
 					Int("duplicate_index", i).
-					Str("event_time", records[i].EventTime.Format("2006-01-02 15:04:05")).
-					Msg("Skipping duplicate record within batch")
+					Str("event_time", dupRecord.EventTime.Format("2006-01-02 15:04:05.000000")).
+					Str("transaction_datetime", dupRecord.TransactionDateTime.Format("2006-01-02 15:04:05.000000")).
+					Str("event", dupRecord.Event).
+					Str("level", dupRecord.Level).
+					Str("cluster_guid", dupRecord.ClusterGUID).
+					Str("infobase_guid", dupRecord.InfobaseGUID).
+					Str("user", dupRecord.UserName).
+					Str("computer", dupRecord.Computer).
+					Uint64("session_id", dupRecord.SessionID).
+					Uint64("connection_id", dupRecord.ConnectionID).
+					Str("transaction_id", dupRecord.TransactionID).
+					Int64("transaction_number", dupRecord.TransactionNumber).
+					Str("comment", dupRecord.Comment).
+					Str("data", dupRecord.Data).
+					Str("data_presentation", dupRecord.DataPresentation).
+					Str("event_presentation", dupRecord.EventPresentation).
+					Str("metadata_name", dupRecord.MetadataName).
+					Str("metadata_presentation", dupRecord.MetadataPresentation).
+					Str("server", dupRecord.Server).
+					Uint16("primary_port", dupRecord.PrimaryPort).
+					Uint16("secondary_port", dupRecord.SecondaryPort).
+					Str("application", dupRecord.Application).
+					Str("data_separation", dupRecord.DataSeparation).
+					Str("transaction_status", dupRecord.TransactionStatus).
+					Interface("properties", dupRecord.Properties).
+					Msg("CRITICAL: Duplicate record details - all hash fields")
 			}
 		}
 		
@@ -1082,7 +1130,9 @@ func (w *ClickHouseWriter) flushTechLogSnapshot(ctx context.Context, batchSnapsh
 			record.Method,
 			record.CallID,
 			record.ClusterGUID,
+			record.ClusterName,
 			record.InfobaseGUID,
+			record.InfobaseName,
 			record.RawLine,
 			// SQL event properties (DBMSSQL, DBPOSTGRS, DBORACLE, DB2, DBV8DBENG, DBDA, EDS)
 			record.SQL,

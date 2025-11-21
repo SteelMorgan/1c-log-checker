@@ -45,6 +45,7 @@ type Reader struct {
 	metricsCallback FileMetricsCallback // Optional callback for file metrics
 	progressCallback FileProgressCallback // Optional callback for file reading progress
 	offsetStore     EventLogOffsetStore // Optional offset store for resuming file reading
+	filesProcessed  atomic.Int32        // Counter for processed files (thread-safe)
 
 	// Streaming state
 	currentFileIdx int                         // Current file being read
@@ -250,6 +251,10 @@ func (r *Reader) processFile(ctx context.Context, filePath string, workerID int)
 		return
 	}
 	defer file.Close()
+	
+	// Increment files processed counter at the start of file processing
+	// This ensures the counter is accurate during regular metric updates
+	r.filesProcessed.Add(1)
 
 	// Check for saved offset
 	var startOffset int64 = 0
@@ -399,7 +404,7 @@ func (r *Reader) processFile(ctx context.Context, filePath string, workerID int)
 					InfobaseName:        r.infobaseName,
 					FilePath:            filePath,
 					FileName:            filepath.Base(filePath),
-					FilesProcessed:      1,
+					FilesProcessed:      uint32(r.filesProcessed.Load()),
 					RecordsParsed:       currentRecordsCount + uint64(recordsParsedFromOffset),
 					ParsingTimeMs:       elapsedTimeMs,
 					RecordsPerSecond:    recordsPerSecond,
@@ -557,7 +562,7 @@ func (r *Reader) processFile(ctx context.Context, filePath string, workerID int)
 			InfobaseName:        r.infobaseName,
 			FilePath:            filePath,
 			FileName:            filepath.Base(filePath),
-			FilesProcessed:      1,
+			FilesProcessed:      uint32(r.filesProcessed.Load()),
 			RecordsParsed:       finalCount,
 			ParsingTimeMs:       readingDurationMs, // Total time (file reading + parsing)
 			RecordsPerSecond:    recordsPerSecond,

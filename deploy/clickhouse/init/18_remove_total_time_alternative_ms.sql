@@ -1,8 +1,9 @@
--- Add computed columns for total time and percentages
--- These columns are calculated on-the-fly and don't require migration
+-- Remove total_time_alternative_ms column from parser_metrics_extended view
+-- This column was removed as it doesn't provide useful information
+-- (it can be larger than total_time_ms due to overlapping operations in streaming mode)
 
--- Create a view with computed columns for easier analysis
--- Columns are ordered for better readability
+DROP VIEW IF EXISTS logs.parser_metrics_extended;
+
 CREATE VIEW IF NOT EXISTS logs.parser_metrics_extended AS
 SELECT 
     -- Basic identification
@@ -57,3 +58,4 @@ SELECT
     END AS writing_percentage
 FROM logs.parser_metrics
 FINAL;
+

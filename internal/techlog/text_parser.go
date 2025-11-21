@@ -88,11 +88,15 @@ func parsePlainTimestamp(line string, record *domain.TechLogRecord) (string, err
 	durStr := timestampPart[lastDash+1:]
 	
 	// Parse timestamp (ISO format)
+	// 1C stores timestamps in local timezone (MSK for Russian installations)
+	// We parse as UTC to match ClickHouse storage (same as Event Log parsing)
+	// Note: time.Parse without timezone returns UTC by default
 	ts, err := time.Parse("2006-01-02T15:04:05.000000", tsStr)
 	if err != nil {
 		return "", fmt.Errorf("invalid timestamp: %w", err)
 	}
-	record.Timestamp = ts
+	// Ensure UTC timezone (time.Parse returns UTC by default, but be explicit)
+	record.Timestamp = ts.UTC()
 	
 	// Parse duration (microseconds)
 	duration, err := strconv.ParseUint(durStr, 10, 64)
@@ -151,10 +155,12 @@ func parseHierarchicalTimestamp(line string, record *domain.TechLogRecord, fileT
 	
 	// Use timestamp from filename (extracted from yymmddhh pattern)
 	// fileTimestamp already has year, month, day, hour set
+	// 1C stores timestamps in local timezone (MSK for Russian installations)
+	// We parse as UTC to match ClickHouse storage (same as Event Log parsing)
 	record.Timestamp = time.Date(
 		fileTimestamp.Year(), fileTimestamp.Month(), fileTimestamp.Day(),
 		fileTimestamp.Hour(), minutes, seconds, microsec*1000,
-		time.Local,
+		time.UTC, // Use UTC to match Event Log parsing behavior
 	)
 	
 	// Parse duration

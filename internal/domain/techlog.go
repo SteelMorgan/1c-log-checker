@@ -29,7 +29,9 @@ type TechLogRecord struct {
 	
 	// Cluster/Infobase identification
 	ClusterGUID   string
+	ClusterName   string // Имя кластера (из 1CV8Clst.lst)
 	InfobaseGUID  string
+	InfobaseName  string // Имя информационной базы (из 1CV8Clst.lst)
 	
 	// Raw line for forensics
 	RawLine string

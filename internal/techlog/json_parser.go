@@ -35,11 +35,15 @@ func ParseJSONLine(line string) (*domain.TechLogRecord, error) {
 	
 	// Extract core fields
 	if ts, ok := data["ts"].(string); ok {
+		// 1C stores timestamps in local timezone (MSK for Russian installations)
+		// We parse as UTC to match ClickHouse storage (same as Event Log parsing)
+		// Note: time.Parse without timezone returns UTC by default
 		t, err := time.Parse("2006-01-02T15:04:05.000000", ts)
 		if err != nil {
 			return nil, fmt.Errorf("invalid timestamp: %w", err)
 		}
-		record.Timestamp = t
+		// Ensure UTC timezone (time.Parse returns UTC by default, but be explicit)
+		record.Timestamp = t.UTC()
 	}
 	
 	if dur, ok := data["duration"].(string); ok {

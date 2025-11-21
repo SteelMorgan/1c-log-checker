@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -133,12 +134,26 @@ func (s *ParserService) Start(ctx context.Context) error {
 	}
 	
 	// Start tech log tailers
-	for _, dir := range s.cfg.TechLogDirs {
-		s.wg.Add(1)
-		go func(directory string) {
-			defer s.wg.Done()
-			s.runTechLogTailer(ctx, directory)
-		}(dir)
+	// Scan each tech log directory for cluster_guid/infobase_guid subdirectories
+	for _, rootDir := range s.cfg.TechLogDirs {
+		techLogDirs, err := s.scanTechLogDir(rootDir)
+		if err != nil {
+			log.Warn().Err(err).Str("root_dir", rootDir).Msg("Failed to scan tech log directory")
+			continue
+		}
+
+		log.Info().
+			Str("root_dir", rootDir).
+			Int("found_dirs", len(techLogDirs)).
+			Msg("Found tech log directories")
+
+		for _, dir := range techLogDirs {
+			s.wg.Add(1)
+			go func(directory string) {
+				defer s.wg.Done()
+				s.runTechLogTailer(ctx, directory)
+			}(dir)
+		}
 	}
 	
 	log.Info().Msg("Parser service workers started")
@@ -458,6 +473,69 @@ func (s *ParserService) createDirectReader(location logreader.LogLocation, clust
 	return eventlog.NewReaderWithMetricsAndProgress(location.BasePath, location.ClusterGUID, location.InfobaseGUID, clusterName, infobaseName, s.cfg.MaxWorkers, metricsCallback, progressCallback, eventLogOffsetStore)
 }
 
+// scanTechLogDir scans a root tech log directory for cluster_guid/infobase_guid subdirectories
+// Returns full paths to directories that should be monitored
+func (s *ParserService) scanTechLogDir(rootDir string) ([]string, error) {
+	var techLogDirs []string
+
+	// Check if root directory exists
+	if _, err := os.Stat(rootDir); os.IsNotExist(err) {
+		return nil, fmt.Errorf("root directory does not exist: %s", rootDir)
+	}
+
+	// Read root directory
+	clusterEntries, err := os.ReadDir(rootDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read root directory: %w", err)
+	}
+
+	guidRegex := regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`)
+
+	// Look for cluster_guid directories
+	for _, clusterEntry := range clusterEntries {
+		if !clusterEntry.IsDir() {
+			continue
+		}
+
+		clusterName := strings.ToLower(clusterEntry.Name())
+		if !guidRegex.MatchString(clusterName) {
+			continue
+		}
+
+		clusterPath := filepath.Join(rootDir, clusterEntry.Name())
+
+		// Read cluster directory for infobase_guid subdirectories
+		infobaseEntries, err := os.ReadDir(clusterPath)
+		if err != nil {
+			log.Warn().Err(err).Str("cluster_path", clusterPath).Msg("Failed to read cluster directory")
+			continue
+		}
+
+		// Look for infobase_guid directories
+		for _, infobaseEntry := range infobaseEntries {
+			if !infobaseEntry.IsDir() {
+				continue
+			}
+
+			infobaseName := strings.ToLower(infobaseEntry.Name())
+			if !guidRegex.MatchString(infobaseName) {
+				continue
+			}
+
+			infobasePath := filepath.Join(clusterPath, infobaseEntry.Name())
+			techLogDirs = append(techLogDirs, infobasePath)
+
+			log.Debug().
+				Str("cluster_guid", clusterEntry.Name()).
+				Str("infobase_guid", infobaseEntry.Name()).
+				Str("path", infobasePath).
+				Msg("Found tech log directory")
+		}
+	}
+
+	return techLogDirs, nil
+}
+
 // runTechLogTailer runs a tech log tailer for a directory
 func (s *ParserService) runTechLogTailer(ctx context.Context, dir string) {
 	log.Info().Str("dir", dir).Msg("Starting tech log tailer")
@@ -516,25 +594,73 @@ func (s *ParserService) runTechLogTailer(ctx context.Context, dir string) {
 	startTime := time.Now()
 	var recordsParsed uint64 = 0
 	var filesProcessed uint32 = 0
+	var filesProcessedMutex sync.Mutex // Protect filesProcessed counter
 	
-	// Track files processed (will be updated by tailer)
-	// Note: We can't easily track files from handler, so we'll use a simple approach:
-	// Count files at start and assume all are processed
-	allFiles, err := filepath.Glob(filepath.Join(dir, "*.log"))
-	if err == nil {
-		filesProcessed = uint32(len(allFiles))
+	// Create progress callback if writer is available
+	// Progress is written to file_reading_progress table for monitoring
+	var progressCallback techlog.FileProgressCallback
+	if s.writer != nil && !s.cfg.ReadOnly {
+		progressCallback = func(progress *domain.FileReadingProgress) error {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			err := s.writer.WriteFileReadingProgress(ctx, progress)
+			if err != nil {
+				log.Warn().
+					Err(err).
+					Str("file", progress.FileName).
+					Msg("Failed to write file reading progress")
+			}
+			return err
+		}
 	}
 	
-	tailer := techlog.NewTailer(dir, isJSON, s.offsetStore, s.cfg.MaxWorkers)
+	// Create metrics callback if writer is available
+	// Metrics are written to parser_metrics table for each file separately
+	var metricsCallback techlog.FileMetricsCallback
+	if s.writer != nil && !s.cfg.ReadOnly {
+		metricsCallback = func(metrics *domain.ParserMetrics) error {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			err := s.writer.WriteParserMetrics(ctx, metrics)
+			if err != nil {
+				log.Warn().
+					Err(err).
+					Str("file", metrics.FilePath).
+					Msg("Failed to write file parser metrics")
+			}
+			return err
+		}
+	}
+	
+	tailer := techlog.NewTailer(dir, isJSON, s.offsetStore, s.cfg.MaxWorkers, progressCallback, metricsCallback, clusterGUID, infobaseGUID, clusterName, infobaseName, s.cfg.LogDirs)
 
-	// Set callback to flush pending batches after historical files processing completes
-	tailer.SetHistoricalCompleteCallback(func() {
+	// Set callback to flush pending batches and update files count after historical files processing completes
+	tailer.SetHistoricalCompleteCallback(func(filesCount int) {
+		// Update files processed counter
+		filesProcessedMutex.Lock()
+		filesProcessed = uint32(filesCount)
+		currentRecords := recordsParsed
+		filesProcessedMutex.Unlock()
+		
+		log.Info().
+			Int("files_count", filesCount).
+			Uint64("records_parsed", currentRecords).
+			Msg("Updated files processed count from historical processing")
+		
 		if s.writer != nil {
+			// Flush pending batches first
 			if err := s.writer.Flush(ctx); err != nil {
 				log.Error().Err(err).Msg("Failed to flush tech log batches after historical processing")
 			} else {
 				log.Info().Msg("Flushed pending tech log batches after historical processing")
 			}
+			
+			// Note: Parser metrics are now written per-file in processFile callback
+			// No need to write aggregate metrics here - each file has its own metrics record
+			log.Info().
+				Int("files_count", filesCount).
+				Uint64("records_parsed", currentRecords).
+				Msg("Historical files processing completed - metrics written per-file")
 		}
 	})
 
@@ -572,43 +698,19 @@ func (s *ParserService) runTechLogTailer(ctx context.Context, dir string) {
 		totalTime := endTime.Sub(startTime)
 		recordsPerSec := float64(recordsParsed) / totalTime.Seconds()
 		
-		metrics := &domain.ParserMetrics{
-			Timestamp:           time.Now(),
-			ParserType:          "tech_log",
-			ClusterGUID:          clusterGUID,
-			ClusterName:          clusterName,
-			InfobaseGUID:         infobaseGUID,
-			InfobaseName:         infobaseName,
-			FilePath:             dir, // Use directory path for tech_log (tailer reads multiple files)
-			FileName:             "",  // Not applicable for tech_log (multiple files)
-			FilesProcessed:       filesProcessed,
-			RecordsParsed:        recordsParsed,
-			ParsingTimeMs:        uint64(totalTime.Milliseconds()),
-			RecordsPerSecond:    recordsPerSec,
-			StartTime:           startTime,
-			EndTime:             endTime,
-			ErrorCount:          0,
-			// For tech_log, reading and parsing happen simultaneously (tailer reads line by line)
-			// Use total parsing time as approximation for record parsing time
-			FileReadingTimeMs:   0, // Not separately measured for tech_log (tailer reads on-demand)
-			RecordParsingTimeMs: uint64(totalTime.Milliseconds()), // Approximate: total time includes parsing
-			// DeduplicationTimeMs and WritingTimeMs will be enriched by writer from accumulated metrics
-			DeduplicationTimeMs: 0,
-			WritingTimeMs:        0,
-		}
+		// Get final files count (thread-safe)
+		filesProcessedMutex.Lock()
+		finalFilesCount := filesProcessed
+		filesProcessedMutex.Unlock()
 		
-		if !s.cfg.ReadOnly && s.writer != nil {
-			if err := s.writer.WriteParserMetrics(ctx, metrics); err != nil {
-				log.Error().Err(err).Msg("Failed to write parser metrics")
-			}
-		}
-		
+		// Note: Parser metrics are now written per-file in processFile callback
+		// No need to write aggregate metrics here - each file has its own metrics record
 		log.Info().
-			Uint32("files", filesProcessed).
+			Uint32("files", finalFilesCount).
 			Uint64("records", recordsParsed).
 			Dur("time", totalTime).
 			Float64("records_per_sec", recordsPerSec).
-			Msg("Tech log parsing metrics")
+			Msg("Tech log parsing completed - metrics written per-file")
 	}()
 	
 	// Wait for tailer or ticker
@@ -622,41 +724,23 @@ func (s *ParserService) runTechLogTailer(ctx context.Context, dir string) {
 			}
 			return
 		case <-ticker.C:
-			// Write periodic metrics
+			// Note: Parser metrics are now written per-file in processFile callback
+			// No need to write periodic aggregate metrics - each file has its own metrics record
 			currentTime := time.Now()
 			elapsed := currentTime.Sub(startTime)
 			recordsPerSec := float64(recordsParsed) / elapsed.Seconds()
 			
-			metrics := &domain.ParserMetrics{
-				Timestamp:           time.Now(),
-				ParserType:          "tech_log",
-				ClusterGUID:          clusterGUID,
-				ClusterName:          "", // Not available from path
-				InfobaseGUID:         infobaseGUID,
-				InfobaseName:         "", // Not available from path
-				FilePath:             dir, // Use directory path for tech_log (tailer reads multiple files)
-				FileName:             "",  // Not applicable for tech_log (multiple files)
-				FilesProcessed:       filesProcessed,
-				RecordsParsed:        recordsParsed,
-				ParsingTimeMs:        uint64(elapsed.Milliseconds()),
-				RecordsPerSecond:     recordsPerSec,
-				StartTime:            startTime,
-				EndTime:              currentTime,
-				ErrorCount:            0,
-				// For tech_log, reading and parsing happen simultaneously (tailer reads line by line)
-				// Use elapsed time as approximation for record parsing time
-				FileReadingTimeMs:    0, // Not separately measured for tech_log (tailer reads on-demand)
-				RecordParsingTimeMs: uint64(elapsed.Milliseconds()), // Approximate: elapsed time includes parsing
-				// DeduplicationTimeMs and WritingTimeMs will be enriched by writer from accumulated metrics
-				DeduplicationTimeMs:  0,
-				WritingTimeMs:       0,
-			}
+			// Get current files count (thread-safe)
+			filesProcessedMutex.Lock()
+			currentFilesCount := filesProcessed
+			filesProcessedMutex.Unlock()
 			
-			if !s.cfg.ReadOnly && s.writer != nil {
-				if err := s.writer.WriteParserMetrics(ctx, metrics); err != nil {
-					log.Error().Err(err).Msg("Failed to write periodic parser metrics")
-				}
-			}
+			log.Info().
+				Uint32("files", currentFilesCount).
+				Uint64("records", recordsParsed).
+				Dur("elapsed", elapsed).
+				Float64("records_per_sec", recordsPerSec).
+				Msg("Tech log parsing progress - metrics written per-file")
 		}
 	}
 }
