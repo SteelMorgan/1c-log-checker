@@ -64,6 +64,7 @@
       "id": 1,
       "options": {
         "cellHeight": "sm",
+        "enablePagination": false,
         "showHeader": true,
         "sortBy": [
           {
@@ -84,7 +85,7 @@
           "meta": {},
           "pluginVersion": "4.11.2",
           "queryType": "table",
-          "rawSql": "SELECT\n  event_time AS \"Дата, время\",\n  cluster_name AS \"Кластер\",\n  infobase_name AS \"Информационная база\",\n  level AS \"Уровень\",\n  event_presentation AS \"Событие\",\n  user_name AS \"Пользователь\",\n  computer AS \"Компьютер\",\n  application_presentation AS \"Приложение\",\n  session_id AS \"Сеанс\",\n  connection AS \"Соединение\",\n  transaction_status AS \"Статус транзакции\",\n  transaction_id AS \"ID транзакции\",\n  metadata_presentation AS \"Метаданные\",\n  data_presentation AS \"Данные\",\n  comment AS \"Комментарий\",\n  comment_normalized AS \"Нормализованный комментарий\",\n  server AS \"Сервер\"\nFROM logs.event_log\nORDER BY event_time DESC",
+          "rawSql": "SELECT\n  event_time AS \"Дата, время\",\n  cluster_name AS \"Кластер\",\n  infobase_name AS \"Информационная база\",\n  level AS \"Уровень\",\n  event_presentation AS \"Событие\",\n  user_name AS \"Пользователь\",\n  computer AS \"Компьютер\",\n  application_presentation AS \"Приложение\",\n  session_id AS \"Сеанс\",\n  connection AS \"Соединение\",\n  transaction_status AS \"Статус транзакции\",\n  transaction_id AS \"ID транзакции\",\n  metadata_presentation AS \"Метаданные\",\n  data_presentation AS \"Данные\",\n  comment AS \"Комментарий\",\n  comment_normalized AS \"Нормализованный комментарий\",\n  server AS \"Сервер\"\nFROM logs.event_log\nORDER BY event_time DESC\nLIMIT 1000",
           "refId": "A"
         }
       ],
@@ -111,5 +112,5 @@
   "timezone": "browser",
   "title": "1C Event Log - Explorer",
   "uid": "1c-event-log-explorer",
-  "version": 8
+  "version": 10
 }
