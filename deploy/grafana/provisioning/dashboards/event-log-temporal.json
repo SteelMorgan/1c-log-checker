@@ -99,7 +99,7 @@
           "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
           "refId": "A",
           "queryType": "sql",
-          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(event_time), 3600) * 3600) AS time,\n  CASE toDayOfWeek(event_time)\n    WHEN 1 THEN 'Понедельник'\n    WHEN 2 THEN 'Вторник'\n    WHEN 3 THEN 'Среда'\n    WHEN 4 THEN 'Четверг'\n    WHEN 5 THEN 'Пятница'\n    WHEN 6 THEN 'Суббота'\n    WHEN 7 THEN 'Воскресенье'\n    ELSE 'Unknown'\n  END AS day_of_week,\n  toString(toHour(event_time)) AS hour,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nGROUP BY time, day_of_week, hour\nORDER BY time",
+          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(event_time), 3600) * 3600) AS time,\n  concat(\n    toString(toDayOfWeek(event_time)),\n    '. ',\n    CASE toDayOfWeek(event_time)\n      WHEN 1 THEN 'Понедельник'\n      WHEN 2 THEN 'Вторник'\n      WHEN 3 THEN 'Среда'\n      WHEN 4 THEN 'Четверг'\n      WHEN 5 THEN 'Пятница'\n      WHEN 6 THEN 'Суббота'\n      WHEN 7 THEN 'Воскресенье'\n      ELSE 'Unknown'\n    END,\n    ' ',\n    toString(toHour(event_time)),\n    ':00'\n  ) AS metric,\n  count() AS value\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nGROUP BY time, toDayOfWeek(event_time), toHour(event_time)\nORDER BY toDayOfWeek(event_time), toHour(event_time), time",
           "format": 0
         }
       ],
@@ -111,7 +111,11 @@
           "scheme": "Spectral"
         },
         "yAxis": {
-          "axisPlacement": "left"
+          "axisPlacement": "left",
+          "unit": "short"
+        },
+        "legend": {
+          "show": true
         }
       }
     },

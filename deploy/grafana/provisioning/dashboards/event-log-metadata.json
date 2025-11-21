@@ -1,134 +1,152 @@
 {
-  "title": "1C Event Log - Metadata Analysis",
-  "uid": "1c-event-log-metadata",
-  "version": 1,
-  "schemaVersion": 38,
-  "tags": ["1c", "event-log", "metadata"],
-  "timezone": "browser",
-  "editable": true,
-  "time": {
-    "from": "now-7d",
-    "to": "now"
-  },
-  "refresh": "1m",
-  "templating": {
+  "annotations": {
     "list": [
       {
-        "name": "infobase",
-        "type": "query",
-        "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
-        "query": "SELECT DISTINCT infobase_name FROM logs.event_log WHERE infobase_name != '' ORDER BY cluster_name, infobase_name",
-        "current": {
-          "selected": false,
-          "text": "All",
-          "value": "$__all"
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
         },
-        "includeAll": true,
-        "multi": true,
-        "allValue": null,
-        "saveState": true
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
       }
     ]
   },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": 15,
+  "links": [],
   "panels": [
     {
-      "id": 1,
-      "title": "Топ изменяемых объектов",
-      "type": "barchart",
-      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 0},
-      "targets": [
-        {
-          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
-          "refId": "A",
-          "queryType": "sql",
-          "rawSql": "SELECT\n  metadata_presentation AS metadata,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND metadata_presentation != ''\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nGROUP BY metadata_presentation\nORDER BY count DESC\nLIMIT 30",
-          "format": 1
-        }
-      ],
-      "options": {
-        "orientation": "horizontal",
-        "xField": "count",
-        "yField": "metadata",
-        "colorByField": "metadata"
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
           "color": {
             "mode": "palette-classic"
-          }
-        }
-      }
-    },
-    {
-      "id": 2,
-      "title": "Изменения документов",
-      "type": "timeseries",
-      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 10},
-      "targets": [
-        {
-          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
-          "refId": "A",
-          "queryType": "sql",
-          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(event_time), 300) * 300) AS time,\n  event_presentation AS event,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND event_presentation IN ('Данные. Изменение', 'Данные. Создание', 'Данные. Удаление')\n  AND metadata_presentation != ''\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nGROUP BY time, event\nORDER BY time",
-          "format": 0
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
+          },
           "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "fillOpacity": 10
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
           },
-          "color": {
-            "mode": "palette-classic"
-          },
-          "unit": "short"
-        }
-      }
-    },
-    {
-      "id": 3,
-      "title": "Распределение по типам метаданных",
-      "type": "piechart",
-      "gridPos": {"h": 10, "w": 12, "x": 0, "y": 20},
-      "targets": [
-        {
-          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
-          "refId": "A",
-          "queryType": "sql",
-          "rawSql": "SELECT\n  CASE\n    WHEN splitByChar('.', metadata_name)[1] != '' THEN splitByChar('.', metadata_name)[1]\n    ELSE 'Unknown'\n  END AS metadata_type,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND metadata_name != ''\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nGROUP BY metadata_type\nORDER BY count DESC",
-          "format": 1
-        }
-      ],
-      "options": {
-        "pieType": "pie",
-        "tooltip": {
-          "mode": "single"
+          "mappings": []
         },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "count"
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 17,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "id": 3,
+      "options": {
         "legend": {
           "displayMode": "table",
           "placement": "right",
-          "values": ["value", "percent"]
+          "showLegend": true,
+          "values": [
+            "value",
+            "percent"
+          ]
+        },
+        "pieType": "pie",
+        "reduceOptions": {
+          "calcs": [],
+          "fields": "count",
+          "values": true
+        },
+        "sort": "desc",
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
         }
-      }
-    },
-    {
-      "id": 4,
-      "title": "Топ типов метаданных",
-      "type": "table",
-      "gridPos": {"h": 10, "w": 12, "x": 12, "y": 20},
+      },
+      "pluginVersion": "12.2.1",
       "targets": [
         {
-          "datasource": {"type": "grafana-clickhouse-datasource", "uid": "clickhouse"},
-          "refId": "A",
-          "queryType": "sql",
-          "rawSql": "SELECT\n  CASE\n    WHEN splitByChar('.', metadata_name)[1] != '' THEN splitByChar('.', metadata_name)[1]\n    ELSE 'Unknown'\n  END AS \"Тип метаданных\",\n  count() AS \"Количество событий\",\n  uniq(metadata_name) AS \"Уникальных объектов\"\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND metadata_name != ''\n  AND ('$__all' IN ($infobase) OR infobase_name IN ($infobase))\nGROUP BY \"Тип метаданных\"\nORDER BY \"Количество событий\" DESC",
-          "format": 1
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "meta": {},
+          "pluginVersion": "4.11.2",
+          "queryType": "table",
+          "rawSql": "SELECT\n  metadata_presentation AS metadata,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND metadata_presentation != ''\n  AND ('$__all' IN ($infobase) OR metadata_presentation IN ($infobase))\nGROUP BY metadata_presentation\nORDER BY count DESC\nLIMIT 20",
+          "refId": "A"
         }
       ],
+      "title": "Распределение по типам метаданных",
+      "type": "piechart"
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "footer": {
+              "reducers": []
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 17,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "id": 4,
       "options": {
+        "cellHeight": "sm",
         "showHeader": true,
         "sortBy": [
           {
@@ -136,8 +154,156 @@
             "displayName": "Количество событий"
           }
         ]
-      }
+      },
+      "pluginVersion": "12.2.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "format": 1,
+          "queryType": "sql",
+          "rawSql": "SELECT\n  CASE\n    WHEN splitByChar('.', metadata_presentation)[1] != '' THEN splitByChar('.', metadata_presentation)[1]\n    ELSE 'Unknown'\n  END AS \"Тип метаданных\",\n  count() AS \"Количество событий\",\n  uniq(metadata_presentation) AS \"Уникальных объектов\"\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND metadata_presentation != ''\n  AND ('$__all' IN ($infobase) OR metadata_presentation IN ($infobase))\nGROUP BY \"Тип метаданных\"\nORDER BY \"Количество событий\" DESC",
+          "refId": "A"
+        }
+      ],
+      "title": "Топ типов метаданных",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 19,
+        "w": 24,
+        "x": 0,
+        "y": 17
+      },
+      "id": 2,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.2.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "format": 0,
+          "queryType": "sql",
+          "rawSql": "SELECT\n  toDateTime(intDiv(toUInt32(event_time), 300) * 300) AS time,\n  event_presentation AS event,\n  count() AS count\nFROM logs.event_log\nWHERE $__timeFilter(event_time)\n  AND event_presentation IN ('Данные.Изменение', 'Данные.Создание', 'Данные.Удаление')\n  AND metadata_presentation != ''\n  AND ('$__all' IN ($infobase) OR metadata_presentation IN ($infobase))\nGROUP BY time, event\nORDER BY time",
+          "refId": "A"
+        }
+      ],
+      "title": "Изменения документов",
+      "type": "timeseries"
     }
-  ]
+  ],
+  "preload": false,
+  "refresh": "1m",
+  "schemaVersion": 42,
+  "tags": [
+    "1c",
+    "event-log",
+    "metadata"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "clickhouse"
+        },
+        "includeAll": true,
+        "multi": true,
+        "name": "infobase",
+        "query": "SELECT DISTINCT metadata_presentation FROM logs.event_log WHERE metadata_presentation != '' ORDER BY cluster_name, metadata_presentation",
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "1C Event Log - Metadata Analysis",
+  "uid": "1c-event-log-metadata",
+  "version": 17
 }
-
