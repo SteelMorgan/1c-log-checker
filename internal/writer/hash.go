@@ -7,7 +7,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/1c-log-checker/internal/domain"
+	"github.com/SteelMorgan/1c-log-checker/internal/domain"
 )
 
 // calculateEventLogHash calculates SHA1 hash of event log record

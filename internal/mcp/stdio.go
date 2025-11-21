@@ -9,7 +9,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/1c-log-checker/internal/handlers"
+	"github.com/SteelMorgan/1c-log-checker/internal/handlers"
 	"github.com/rs/zerolog/log"
 )
 

@@ -12,14 +12,14 @@ import (
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
-	"github.com/1c-log-checker/internal/config"
-	"github.com/1c-log-checker/internal/domain"
-	"github.com/1c-log-checker/internal/logreader"
-	"github.com/1c-log-checker/internal/logreader/eventlog"
-	"github.com/1c-log-checker/internal/offset"
-	"github.com/1c-log-checker/internal/retry"
-	"github.com/1c-log-checker/internal/techlog"
-	"github.com/1c-log-checker/internal/writer"
+	"github.com/SteelMorgan/1c-log-checker/internal/config"
+	"github.com/SteelMorgan/1c-log-checker/internal/domain"
+	"github.com/SteelMorgan/1c-log-checker/internal/logreader"
+	"github.com/SteelMorgan/1c-log-checker/internal/logreader/eventlog"
+	"github.com/SteelMorgan/1c-log-checker/internal/offset"
+	"github.com/SteelMorgan/1c-log-checker/internal/retry"
+	"github.com/SteelMorgan/1c-log-checker/internal/techlog"
+	"github.com/SteelMorgan/1c-log-checker/internal/writer"
 	"github.com/rs/zerolog/log"
 )
 

@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
-	"github.com/1c-log-checker/internal/domain"
-	"github.com/1c-log-checker/internal/normalizer"
-	"github.com/1c-log-checker/internal/retry"
+	"github.com/SteelMorgan/1c-log-checker/internal/domain"
+	"github.com/SteelMorgan/1c-log-checker/internal/normalizer"
+	"github.com/SteelMorgan/1c-log-checker/internal/retry"
 	"github.com/rs/zerolog/log"
 )
 

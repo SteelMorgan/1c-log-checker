@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/1c-log-checker/internal/clickhouse"
+	"github.com/SteelMorgan/1c-log-checker/internal/clickhouse"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 )

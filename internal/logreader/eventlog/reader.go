@@ -11,8 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/1c-log-checker/internal/domain"
-	"github.com/1c-log-checker/internal/offset"
+	"github.com/SteelMorgan/1c-log-checker/internal/domain"
+	"github.com/SteelMorgan/1c-log-checker/internal/offset"
 	"github.com/rs/zerolog/log"
 )
 

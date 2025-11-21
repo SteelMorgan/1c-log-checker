@@ -1,4 +1,4 @@
-module github.com/1c-log-checker
+module github.com/SteelMorgan/1c-log-checker
 
 go 1.23.0
 

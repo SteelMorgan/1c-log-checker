@@ -207,3 +207,4 @@ docker inspect 1c-log-clickhouse --format='{{json .HostConfig}}' | ConvertFrom-J
 - **Решение**: Установить разумные ограничения через docker-compose.yml и конфигурацию ClickHouse
 - **Рекомендация**: Начать с 4 CPU и 4 GB памяти, затем корректировать по результатам мониторинга
 
+

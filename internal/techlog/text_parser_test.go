@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 	
-	"github.com/1c-log-checker/internal/domain"
+	"github.com/SteelMorgan/1c-log-checker/internal/domain"
 )
 
 func TestParseTextLine_PlainFormat(t *testing.T) {

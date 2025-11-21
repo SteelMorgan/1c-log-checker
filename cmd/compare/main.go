@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"io"
 	"os"
-	_ "github.com/1c-log-checker/internal/observability"
+	_ "github.com/SteelMorgan/1c-log-checker/internal/observability"
 	"strings"
 	"time"
 
-	"github.com/1c-log-checker/internal/domain"
-	"github.com/1c-log-checker/internal/logreader/eventlog"
+	"github.com/SteelMorgan/1c-log-checker/internal/domain"
+	"github.com/SteelMorgan/1c-log-checker/internal/logreader/eventlog"
 	"github.com/rs/zerolog/log"
 )
 

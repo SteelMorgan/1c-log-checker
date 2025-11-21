@@ -3,7 +3,7 @@ package writer
 import (
 	"context"
 
-	"github.com/1c-log-checker/internal/domain"
+	"github.com/SteelMorgan/1c-log-checker/internal/domain"
 )
 
 // BatchWriter writes records to ClickHouse in batches

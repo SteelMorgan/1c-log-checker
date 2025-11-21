@@ -9,10 +9,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/1c-log-checker/internal/clickhouse"
-	"github.com/1c-log-checker/internal/config"
-	"github.com/1c-log-checker/internal/handlers"
-	"github.com/1c-log-checker/internal/mapping"
+	"github.com/SteelMorgan/1c-log-checker/internal/clickhouse"
+	"github.com/SteelMorgan/1c-log-checker/internal/config"
+	"github.com/SteelMorgan/1c-log-checker/internal/handlers"
+	"github.com/SteelMorgan/1c-log-checker/internal/mapping"
 	"github.com/rs/zerolog/log"
 )
 
@@ -227,7 +227,7 @@ func (s *Server) handleGetEventLog(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Check if it's a validation error
 		if valErr, ok := err.(*handlers.ValidationError); ok {
-			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(valErr)
 			return
@@ -239,7 +239,7 @@ func (s *Server) handleGetEventLog(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Return result
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(result))
 }
@@ -295,7 +295,7 @@ func (s *Server) handleGetTechLog(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Check if it's a validation error
 		if valErr, ok := err.(*handlers.ValidationError); ok {
-			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(valErr)
 			return
@@ -307,7 +307,7 @@ func (s *Server) handleGetTechLog(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Return result
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(result))
 }
@@ -356,7 +356,7 @@ func (s *Server) handleConfigureTechLog(w http.ResponseWriter, r *http.Request) 
 	result, err := s.configureTechHandler.ConfigureTechLog(r.Context(), params)
 	if err != nil {
 		// Return validation error with details
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"error":   "Configuration validation failed",
@@ -393,7 +393,7 @@ func (s *Server) handleDisableTechLog(w http.ResponseWriter, r *http.Request) {
 	// Call handler
 	if err := s.disableTechHandler.DisableTechLog(r.Context(), configPath); err != nil {
 		log.Error().Err(err).Msg("Failed to disable tech log")
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"error":   "Failed to disable tech log",
@@ -403,7 +403,7 @@ func (s *Server) handleDisableTechLog(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Return success
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":  "success",
@@ -434,7 +434,7 @@ func (s *Server) handleSaveTechLog(w http.ResponseWriter, r *http.Request) {
 	// Call handler
 	if err := s.saveTechHandler.SaveTechLog(r.Context(), configPath); err != nil {
 		log.Error().Err(err).Msg("Failed to save tech log")
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"error":   "Failed to save tech log",
@@ -444,7 +444,7 @@ func (s *Server) handleSaveTechLog(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Return success
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":  "success",
@@ -475,7 +475,7 @@ func (s *Server) handleRestoreTechLog(w http.ResponseWriter, r *http.Request) {
 	// Call handler
 	if err := s.restoreTechHandler.RestoreTechLog(r.Context(), configPath); err != nil {
 		log.Error().Err(err).Msg("Failed to restore tech log")
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"error":   "Failed to restore tech log",
@@ -485,7 +485,7 @@ func (s *Server) handleRestoreTechLog(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Return success
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":  "success",
@@ -520,7 +520,7 @@ func (s *Server) handleGetTechLogConfig(w http.ResponseWriter, r *http.Request) 
 	result, err := s.getTechCfgHandler.GetTechLogConfig(r.Context(), configPath)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get tech log config")
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusNotFound)
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"error":   "Failed to read tech log config",
@@ -562,7 +562,7 @@ func (s *Server) handleGetActualLogTimestamp(w http.ResponseWriter, r *http.Requ
 	if err != nil {
 		// Check if it's a validation error
 		if valErr, ok := err.(*handlers.ValidationError); ok {
-			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(valErr)
 			return
@@ -574,7 +574,7 @@ func (s *Server) handleGetActualLogTimestamp(w http.ResponseWriter, r *http.Requ
 	}
 
 	// Return result
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(result))
 }

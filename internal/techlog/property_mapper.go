@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/1c-log-checker/internal/domain"
+	"github.com/SteelMorgan/1c-log-checker/internal/domain"
 )
 
 // setRecordProperty sets a property in the record, handling ALL known fields from 1C platform documentation

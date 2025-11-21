@@ -9,3 +9,4 @@ ADD COLUMN IF NOT EXISTS comment_normalized String CODEC(ZSTD);
 ALTER TABLE logs.event_log 
 ADD INDEX IF NOT EXISTS idx_comment_normalized comment_normalized TYPE bloom_filter(0.01) GRANULARITY 4;
 
+

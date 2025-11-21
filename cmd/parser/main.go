@@ -7,9 +7,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/1c-log-checker/internal/config"
-	"github.com/1c-log-checker/internal/observability"
-	"github.com/1c-log-checker/internal/service"
+	"github.com/SteelMorgan/1c-log-checker/internal/config"
+	"github.com/SteelMorgan/1c-log-checker/internal/observability"
+	"github.com/SteelMorgan/1c-log-checker/internal/service"
 	"github.com/rs/zerolog/log"
 )
 

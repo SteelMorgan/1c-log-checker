@@ -3,7 +3,7 @@ package logreader
 import (
 	"context"
 
-	"github.com/1c-log-checker/internal/domain"
+	"github.com/SteelMorgan/1c-log-checker/internal/domain"
 )
 
 // EventLogReader reads and parses 1C Event Log files (.lgf/.lgp)

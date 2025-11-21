@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/1c-log-checker/internal/domain"
+	"github.com/SteelMorgan/1c-log-checker/internal/domain"
 )
 
 // ParseTextLine parses a single line from text-format tech log

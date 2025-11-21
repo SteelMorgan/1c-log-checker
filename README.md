@@ -58,10 +58,13 @@
 - ✅ Настраиваемый TTL (по умолчанию 30 дней)
 
 ### Grafana
-- ✅ Dashboard: Общая активность
-- ✅ Dashboard: Топ ошибок
-- ✅ Dashboard: Новые ошибки (24 часа)
-- ✅ Dashboard: Техжурнал (duration, блокировки, DBMSSQL)
+- ✅ Dashboard: 1C Event Log - Overview (Общая активность)
+- ✅ Dashboard: 1C Event Log - Errors (новые ошибки за 24 часа, нормализация ошибок)
+- ✅ Dashboard: 1C Event Log - Explorer (полный Журнал регистрации с фильтрами)
+- ✅ Dashboard: 1C Event Log - Metadata Analysis (аналитика по методанным)
+- ✅ Dashboard: 1C Event Log - Temporal Patterns (графики активности)
+Для удаления предустановленных дашбордов удалите файлы в каталоге /deploy/grafana/provisioning/dashborads/
+
 
 ### MCP для AI-агентов
 
@@ -446,7 +449,6 @@ docker-compose up -d
 
 ### Навыки и база знаний:
 - [ ] Сделать корректную нормализацию для tech_log (самому глазами проверить все поля или найти готовое)
-- [ ] Доделать дашборды Графана
 - [ ] Добавить работу с логами PostgreSQL
 - [ ] Добавить работу с логами MS SQL
 - [ ] Создать навык для работы с "MS SQL/PostgreSQL в контексте 1С" (блокировки, RCSI, оптимизация)

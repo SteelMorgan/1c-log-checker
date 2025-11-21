@@ -233,6 +233,9 @@ golangci-lint run
 
 # Тест всех MCP tools
 .\scripts\test_mcp_tools.ps1
+
+# Верификация MCP инструмента event_log (сравнение с ClickHouse)
+.\scripts\test_event_log_verification.ps1
 ```
 
 **Что тестируется:**
@@ -240,6 +243,93 @@ golangci-lint run
 - `configure_techlog` (с валидацией пути и GUID)
 - `get_event_log`
 - `get_tech_log`
+
+#### 3.1.1. Верификация MCP инструмента `event_log`
+
+**Скрипт:** `scripts/test_event_log_verification.ps1`
+
+**Назначение:** Проверяет корректность работы MCP инструмента `logc_get_event_log` путем сравнения результатов с прямым SQL запросом к ClickHouse.
+
+**Использование:**
+```powershell
+# Базовый запуск (последние 24 часа, 10 записей)
+.\scripts\test_event_log_verification.ps1
+
+# С параметрами
+.\scripts\test_event_log_verification.ps1 -Limit 20 -Mode "full" -Level "Error"
+
+# С указанием временного диапазона
+.\scripts\test_event_log_verification.ps1 -From "2025-01-01T00:00:00Z" -To "2025-12-31T23:59:59Z" -Limit 10
+```
+
+**Параметры:**
+- `-MCPUrl` — URL MCP сервера (по умолчанию: `http://localhost:8080`)
+- `-ClickHouseHost` — хост ClickHouse (по умолчанию: `localhost`)
+- `-ClickHousePort` — порт ClickHouse HTTP API (по умолчанию: `8123`)
+- `-ClickHouseDB` — база данных (по умолчанию: `logs`)
+- `-ClusterGUID` — GUID кластера (по умолчанию: из `cluster_map.yaml`)
+- `-InfobaseGUID` — GUID информационной базы (по умолчанию: из `cluster_map.yaml`)
+- `-From` — начало периода в ISO 8601 (по умолчанию: последние 24 часа)
+- `-To` — конец периода в ISO 8601 (по умолчанию: текущее время)
+- `-Level` — фильтр по уровню: `Error`, `Warning`, `Information`, `Note` (опционально)
+- `-Mode` — режим вывода: `minimal` или `full` (по умолчанию: `minimal`)
+- `-Limit` — максимальное количество записей (по умолчанию: `10`)
+
+**Что делает скрипт:**
+1. Вызывает MCP инструмент `logc_get_event_log` с заданными параметрами
+2. Извлекает параметры запроса (cluster_guid, infobase_guid, from, to, level, mode, limit)
+3. Выполняет прямой SQL запрос к ClickHouse с теми же параметрами
+4. Сравнивает результаты:
+   - Количество записей
+   - Формат времени (нормализуется для сравнения)
+   - Значения полей
+5. Выводит отчет о различиях (если есть)
+
+**Пример вывода:**
+```
+=== Event Log MCP Tool Verification Test ===
+
+Test Parameters:
+  Cluster GUID: b0881663-f2a7-4195-b7a2-f7f8e6c3a8f3
+  Infobase GUID: d723aefd-7992-420d-b5f9-a273fd4146be
+  From: 2025-01-01T00:00:00Z
+  To: 2025-12-31T23:59:59Z
+  Level: (all)
+  Mode: minimal
+  Limit: 10
+
+Step 1: Calling MCP tool logc_get_event_log...
+MCP call successful
+  MCP returned 10 records
+
+Step 2: Building SQL query for ClickHouse...
+Step 3: Executing SQL query to ClickHouse...
+ClickHouse query successful
+  ClickHouse returned 10 records
+
+Step 4: Comparing results...
+Record counts match
+
+=== Test Summary ===
+  MCP records: 10
+  ClickHouse records: 10
+  Compared: 10
+  Differences: 0
+
+TEST PASSED: Results match perfectly!
+```
+
+**Когда использовать:**
+- После изменений в handler `event_log`
+- После изменений в SQL запросах к ClickHouse
+- Для проверки корректности работы MCP инструмента
+- При отладке проблем с получением данных через MCP
+
+**Важно:**
+- Скрипт требует, чтобы MCP сервер был запущен
+- Скрипт требует доступ к ClickHouse (HTTP API на порту 8123)
+- При наличии различий скрипт выводит детальный отчет
+- Формат времени автоматически нормализуется для сравнения (ISO 8601 vs ClickHouse формат)
 
 #### 3.2. Ручное тестирование
 
@@ -750,6 +840,7 @@ Docker Compose Stack
 - **Full Reset:** `scripts/full_reset.ps1` — полный сброс системы
 - **Test MCP:** `scripts/test_mcp_server.ps1` — тестирование MCP-сервера
 - **Test Workflow:** `scripts/test_workflow.ps1` — полный E2E workflow
+- **Test Event Log Verification:** `scripts/test_event_log_verification.ps1` — верификация MCP инструмента event_log
 
 ### Внешние ресурсы
 

@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/1c-log-checker/internal/techlog"
+	"github.com/SteelMorgan/1c-log-checker/internal/techlog"
 )
 
 // ConfigureTechLogHandler handles configure_techlog MCP tool

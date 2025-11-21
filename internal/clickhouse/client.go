@@ -7,7 +7,7 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
-	"github.com/1c-log-checker/internal/retry"
+	"github.com/SteelMorgan/1c-log-checker/internal/retry"
 	"github.com/rs/zerolog/log"
 )
 

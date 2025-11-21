@@ -182,3 +182,4 @@ docker stats 1c-log-parser --no-stream
    - При необходимости добавить ограничения CPU в docker-compose
    - Мониторить метрики производительности
 
+
