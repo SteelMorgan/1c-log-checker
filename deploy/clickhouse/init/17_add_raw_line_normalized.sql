@@ -10,3 +10,5 @@ ALTER TABLE logs.tech_log
 ADD INDEX IF NOT EXISTS idx_raw_line_normalized raw_line_normalized TYPE bloom_filter(0.01) GRANULARITY 4;
 
 
+
+

@@ -59,3 +59,5 @@ SELECT
 FROM logs.parser_metrics
 FINAL;
 
+
+

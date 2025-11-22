@@ -26,3 +26,5 @@ TTL updated_at + INTERVAL 90 DAY  -- Use updated_at for TTL
 SETTINGS index_granularity = 8192;
 
 
+
+
