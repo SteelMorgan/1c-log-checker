@@ -3,6 +3,7 @@ package techlog
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -35,15 +36,31 @@ func ParseJSONLine(line string) (*domain.TechLogRecord, error) {
 	
 	// Extract core fields
 	if ts, ok := data["ts"].(string); ok {
-		// 1C stores timestamps in local timezone (MSK for Russian installations)
-		// We parse as UTC to match ClickHouse storage (same as Event Log parsing)
-		// Note: time.Parse without timezone returns UTC by default
+		// 1C stores timestamps in local timezone (determined by TZ environment variable)
+		// Parse timestamp as local time and convert to UTC for ClickHouse storage
 		t, err := time.Parse("2006-01-02T15:04:05.000000", ts)
 		if err != nil {
 			return nil, fmt.Errorf("invalid timestamp: %w", err)
 		}
-		// Ensure UTC timezone (time.Parse returns UTC by default, but be explicit)
-		record.Timestamp = t.UTC()
+		
+		// Get timezone from TZ environment variable (defaults to UTC if not set)
+		tzName := os.Getenv("TZ")
+		if tzName == "" {
+			tzName = "UTC"
+		}
+		
+		// Load timezone location
+		loc, err := time.LoadLocation(tzName)
+		if err != nil {
+			// If timezone loading fails, use UTC
+			loc = time.UTC
+		}
+		
+		// Interpret parsed time as local time in the specified timezone
+		localTime := time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), loc)
+		
+		// Convert to UTC for ClickHouse storage
+		record.Timestamp = localTime.UTC()
 	}
 	
 	if dur, ok := data["duration"].(string); ok {

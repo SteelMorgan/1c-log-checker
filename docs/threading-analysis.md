@@ -183,5 +183,3 @@ docker stats 1c-log-parser --no-stream
    - Мониторить метрики производительности
 
 
-
-

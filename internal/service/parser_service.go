@@ -10,15 +10,19 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/SteelMorgan/1c-log-checker/internal/circuitbreaker"
 	"github.com/SteelMorgan/1c-log-checker/internal/config"
 	"github.com/SteelMorgan/1c-log-checker/internal/domain"
 	"github.com/SteelMorgan/1c-log-checker/internal/logreader"
 	"github.com/SteelMorgan/1c-log-checker/internal/logreader/eventlog"
 	"github.com/SteelMorgan/1c-log-checker/internal/offset"
+	"github.com/SteelMorgan/1c-log-checker/internal/queue"
 	"github.com/SteelMorgan/1c-log-checker/internal/retry"
+	"github.com/SteelMorgan/1c-log-checker/internal/metrics"
 	"github.com/SteelMorgan/1c-log-checker/internal/techlog"
 	"github.com/SteelMorgan/1c-log-checker/internal/writer"
 	"github.com/rs/zerolog/log"
@@ -32,7 +36,16 @@ type ParserService struct {
 	chConn      clickhouse.Conn // ClickHouse connection for workers (nil if ReadOnly)
 	debugFile   *os.File // File for saving all parsed records
 	debugMutex  sync.Mutex
-	debugCount  int64    // Counter for records written to debug file
+	debugCount  int64    // Counter for records written to debug file (atomic)
+
+	// Error handling
+	dlq           *queue.DeadLetterQueue
+	circuitBreaker *circuitbreaker.CircuitBreaker
+	retryCfg      retry.Config
+
+	// Metrics (atomic for thread safety)
+	failedRecords int64
+	successRecords int64
 
 	wg sync.WaitGroup
 }
@@ -52,6 +65,8 @@ func NewParserService(cfg *config.Config) (*ParserService, error) {
 	// Connect to ClickHouse (if not in READ_ONLY mode)
 	var batchWriter writer.BatchWriter
 	var chConn clickhouse.Conn
+	var retryCfg retry.Config
+	
 	if !cfg.ReadOnly {
 		conn, err := clickhouse.Open(&clickhouse.Options{
 			Addr: []string{fmt.Sprintf("%s:%d", cfg.ClickHouseHost, cfg.ClickHousePort)},
@@ -68,7 +83,7 @@ func NewParserService(cfg *config.Config) (*ParserService, error) {
 		chConn = conn
 
 		// Create retry configuration from config
-		retryCfg := retry.Config{
+		retryCfg = retry.Config{
 			MaxAttempts:  cfg.RetryMaxAttempts,
 			InitialDelay: time.Duration(cfg.RetryInitialDelay) * time.Millisecond,
 			MaxDelay:     time.Duration(cfg.RetryMaxDelay) * time.Millisecond,
@@ -81,7 +96,20 @@ func NewParserService(cfg *config.Config) (*ParserService, error) {
 			FlushTimeout:       int64(cfg.BatchFlushTimeout),
 			EnableDeduplication: cfg.EnableDeduplication,
 		}, retryCfg)
+	} else {
+		// Use default retry config for read-only mode
+		retryCfg = retry.DefaultConfig()
 	}
+
+	// Initialize dead letter queue
+	dlq, err := queue.NewDeadLetterQueue("/app/logs/dlq")
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to initialize dead letter queue, failed records will be lost")
+		dlq = nil
+	}
+
+	// Initialize circuit breaker (5 failures, 30s reset timeout)
+	circuitBreaker := circuitbreaker.NewCircuitBreaker(5, 30*time.Second)
 
 	// Open debug file for saving all parsed records (only if LOG_LEVEL=debug)
 	var debugFile *os.File
@@ -98,11 +126,14 @@ func NewParserService(cfg *config.Config) (*ParserService, error) {
 	}
 
 	return &ParserService{
-		cfg:         cfg,
-		offsetStore: offsetStore,
-		writer:      batchWriter,
-		chConn:      chConn,
-		debugFile:   debugFile,
+		cfg:            cfg,
+		offsetStore:    offsetStore,
+		writer:         batchWriter,
+		chConn:         chConn,
+		debugFile:      debugFile,
+		dlq:            dlq,
+		circuitBreaker: circuitBreaker,
+		retryCfg:       retryCfg,
 	}, nil
 }
 
@@ -193,15 +224,49 @@ func (s *ParserService) Stop() error {
 		if err := s.debugFile.Close(); err != nil {
 			log.Warn().Err(err).Msg("Failed to close debug file")
 		} else {
+			totalRecords := atomic.LoadInt64(&s.debugCount)
 			log.Info().
 				Str("file", "parser_all_records.jsonl").
-				Int64("total_records", s.debugCount).
+				Int64("total_records", totalRecords).
 				Msg("All parsed records saved to debug file")
 		}
 	}
+
+	// Close dead letter queue
+	if s.dlq != nil {
+		if err := s.dlq.Close(); err != nil {
+			log.Error().Err(err).Msg("Failed to close dead letter queue")
+		}
+	}
+
+	// Log final statistics
+	successCount := atomic.LoadInt64(&s.successRecords)
+	failedCount := atomic.LoadInt64(&s.failedRecords)
+	
+	// Update circuit breaker metric
+	cbState := s.circuitBreaker.GetState()
+	stateValue := 0
+	switch cbState {
+	case circuitbreaker.StateOpen:
+		stateValue = 1
+	case circuitbreaker.StateHalfOpen:
+		stateValue = 2
+	}
+	metrics.SetCircuitBreakerState("clickhouse", stateValue)
+	
+	log.Info().
+		Int64("success_records", successCount).
+		Int64("failed_records", failedCount).
+		Interface("circuit_breaker_stats", s.circuitBreaker.GetStats()).
+		Msg("Parser service statistics")
 	
 	log.Info().Msg("Parser service stopped")
 	return nil
+}
+
+// GetClickHouseConn returns the ClickHouse connection (for health checks)
+func (s *ParserService) GetClickHouseConn() clickhouse.Conn {
+	return s.chConn
 }
 
 // runEventLogReader runs an event log reader for a location
@@ -272,7 +337,7 @@ func (s *ParserService) runEventLogReader(ctx context.Context, location logreade
 					
 					// Calculate total parsing time (from file read to ClickHouse write completion)
 					totalParsingTime := time.Since(parsingStartTime)
-					totalRecords := s.debugCount
+					totalRecords := atomic.LoadInt64(&s.debugCount)
 					recordsPerSec := float64(totalRecords) / totalParsingTime.Seconds()
 					
 					log.Info().
@@ -334,12 +399,13 @@ func (s *ParserService) runEventLogReader(ctx context.Context, location logreade
 				if err := encoder.Encode(record); err != nil {
 					log.Warn().Err(err).Msg("Failed to write record to debug file")
 				} else {
-					s.debugCount++
-					if s.debugCount%50 == 0 {
+					// Use atomic increment for thread safety
+					newCount := atomic.AddInt64(&s.debugCount, 1)
+					if newCount%50 == 0 {
 						elapsed := time.Since(parsingStartTime)
-						recordsPerSec := float64(s.debugCount) / elapsed.Seconds()
+						recordsPerSec := float64(newCount) / elapsed.Seconds()
 						log.Info().
-							Int64("debug_records", s.debugCount).
+							Int64("debug_records", newCount).
 							Dur("elapsed_time", elapsed).
 							Float64("records_per_second", recordsPerSec).
 							Msg("Saved records to debug file")
@@ -350,11 +416,48 @@ func (s *ParserService) runEventLogReader(ctx context.Context, location logreade
 			
 			// Write record immediately (writer handles batching internally)
 			if !s.cfg.ReadOnly && s.writer != nil {
-				if err := s.writer.WriteEventLog(ctx, record); err != nil {
-					log.Error().Err(err).Msg("Failed to write event log record")
+				writeErr := s.circuitBreaker.Execute(ctx, func() error {
+					return s.writer.WriteEventLog(ctx, record)
+				})
+
+				if writeErr != nil {
+					// Retry with exponential backoff
+					retryErr := retry.Do(ctx, s.retryCfg, func() error {
+						return s.circuitBreaker.Execute(ctx, func() error {
+							return s.writer.WriteEventLog(ctx, record)
+						})
+					})
+
+				if retryErr != nil {
+					// All retries failed - add to dead letter queue
+					atomic.AddInt64(&s.failedRecords, 1)
+					metrics.RecordError("error", "writer")
+					metrics.RecordProcessed("event_log", "failed")
+					if s.dlq != nil {
+						if dlqErr := s.dlq.AddEventLog(ctx, record, retryErr, s.retryCfg.MaxAttempts); dlqErr != nil {
+							log.Error().
+								Err(dlqErr).
+								Msg("Failed to add record to dead letter queue")
+						} else {
+							metrics.RecordDLQ("event_log")
+						}
+					} else {
+						log.Error().
+							Err(retryErr).
+							Msg("Failed to write event log record after retries (DLQ unavailable)")
+					}
 				} else {
-					log.Debug().Msg("Wrote event log record")
+					atomic.AddInt64(&s.successRecords, 1)
+					metrics.RecordProcessed("event_log", "success")
+					metrics.RecordWritten("event_log")
+					log.Debug().Msg("Wrote event log record after retry")
 				}
+			} else {
+				atomic.AddInt64(&s.successRecords, 1)
+				metrics.RecordProcessed("event_log", "success")
+				metrics.RecordWritten("event_log")
+				log.Debug().Msg("Wrote event log record")
+			}
 			} else {
 				// In READ_ONLY mode, log each record in detail for comparison
 				batch = append(batch, record)
@@ -404,6 +507,7 @@ func (s *ParserService) createDirectReader(location logreader.LogLocation, clust
 			// CRITICAL: Flush all pending batches before writing metrics
 			// This ensures that all records are written and metrics are accumulated
 			// This is important for both incremental and final metrics
+			// Use context with timeout to prevent hanging
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			if err := s.writer.Flush(ctx); err != nil {

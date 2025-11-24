@@ -133,3 +133,31 @@ func ValidateMode(mode string) error {
 
 	return nil
 }
+
+// ValidateLimit validates the limit parameter
+func ValidateLimit(limit int) error {
+	if limit <= 0 {
+		return &ValidationError{
+			Field:   "limit",
+			Message: "Limit must be greater than 0",
+			Instructions: []string{
+				"Provide a positive integer for limit parameter",
+				"Example: limit=1000",
+			},
+		}
+	}
+
+	const maxLimit = 10000
+	if limit > maxLimit {
+		return &ValidationError{
+			Field:   "limit",
+			Message: fmt.Sprintf("Limit exceeds maximum allowed value (%d)", maxLimit),
+			Instructions: []string{
+				fmt.Sprintf("Limit must be between 1 and %d", maxLimit),
+				"Use pagination for larger result sets",
+			},
+		}
+	}
+
+	return nil
+}

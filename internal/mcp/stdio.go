@@ -3,6 +3,7 @@ package mcp
 import (
 	"bufio"
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,11 +14,15 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+//go:embed tools.json
+var toolsJSONData []byte
+
 // MCPProtocol implements Model Context Protocol over stdio (JSON-RPC)
 type MCPProtocol struct {
 	server *Server
 	stdin  *bufio.Scanner
 	stdout io.Writer
+	tools  []Tool // Cached tools loaded from tools.json
 }
 
 // MCPRequest represents a JSON-RPC request
@@ -82,22 +87,51 @@ type ToolCallRequest struct {
 }
 
 // NewMCPProtocol creates a new MCP protocol handler
-func NewMCPProtocol(server *Server) *MCPProtocol {
+func NewMCPProtocol(server *Server) (*MCPProtocol, error) {
+	// Load tools from tools.json
+	tools, err := loadToolsFromJSON()
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to load tools from tools.json, using fallback")
+		// Fallback to empty tools if file not found
+		tools = []Tool{}
+	}
+
 	return &MCPProtocol{
 		server: server,
 		stdin:  bufio.NewScanner(os.Stdin),
 		stdout: os.Stdout,
+		tools:  tools,
+	}, nil
+}
+
+// loadToolsFromJSON loads tools from embedded tools.json
+func loadToolsFromJSON() ([]Tool, error) {
+	if len(toolsJSONData) == 0 {
+		return nil, fmt.Errorf("embedded tools.json is empty")
 	}
+
+	var toolsData struct {
+		Tools []Tool `json:"tools"`
+	}
+
+	if err := json.Unmarshal(toolsJSONData, &toolsData); err != nil {
+		return nil, fmt.Errorf("failed to parse embedded tools.json: %w", err)
+	}
+
+	log.Info().Int("count", len(toolsData.Tools)).Msg("Loaded tools from embedded tools.json")
+	if len(toolsData.Tools) > 0 {
+		for i, tool := range toolsData.Tools {
+			log.Debug().Int("index", i).Str("name", tool.Name).Msg("Loaded tool")
+		}
+	} else {
+		log.Warn().Msg("No tools loaded from embedded tools.json!")
+	}
+	return toolsData.Tools, nil
 }
 
 // Start starts the MCP stdio protocol server
 func (m *MCPProtocol) Start(ctx context.Context) error {
 	log.Info().Msg("MCP stdio protocol server starting...")
-
-	// Send initialized notification
-	if err := m.sendInitialized(); err != nil {
-		return fmt.Errorf("failed to send initialized notification: %w", err)
-	}
 
 	// Process requests from stdin
 	for m.stdin.Scan() {
@@ -106,12 +140,16 @@ func (m *MCPProtocol) Start(ctx context.Context) error {
 			continue
 		}
 
+		log.Debug().Str("raw_line", line).Msg("Received request")
+
 		var req MCPRequest
 		if err := json.Unmarshal([]byte(line), &req); err != nil {
 			log.Error().Err(err).Str("line", line).Msg("Failed to parse JSON-RPC request")
 			m.sendError(nil, -32700, "Parse error", err.Error())
 			continue
 		}
+
+		log.Info().Str("method", req.Method).Interface("id", req.ID).Msg("Handling request")
 
 		// Handle request
 		if err := m.handleRequest(ctx, &req); err != nil {
@@ -152,11 +190,20 @@ func (m *MCPProtocol) handleRequest(ctx context.Context, req *MCPRequest) error 
 
 // handleInitialize handles the initialize request
 func (m *MCPProtocol) handleInitialize(req *MCPRequest) error {
+	log.Info().Msg("Handling initialize request")
+	
 	var initReq InitializeRequest
 	if err := json.Unmarshal(req.Params, &initReq); err != nil {
+		log.Error().Err(err).Msg("Failed to parse initialize params")
 		m.sendError(req.ID, -32602, "Invalid params", err.Error())
 		return err
 	}
+
+	log.Info().
+		Str("client_name", initReq.ClientInfo.Name).
+		Str("client_version", initReq.ClientInfo.Version).
+		Str("protocol_version", initReq.ProtocolVersion).
+		Msg("Initialize request received")
 
 	response := MCPResponse{
 		JSONRPC: "2.0",
@@ -176,115 +223,34 @@ func (m *MCPProtocol) handleInitialize(req *MCPRequest) error {
 		},
 	}
 
-	return m.writeJSON(response)
+	if err := m.writeJSON(response); err != nil {
+		return err
+	}
+
+	// Send initialized notification AFTER responding to initialize
+	log.Info().Msg("Sending initialized notification")
+	if err := m.sendInitialized(); err != nil {
+		return fmt.Errorf("failed to send initialized notification: %w", err)
+	}
+
+	return nil
 }
 
 // handleToolsList handles the tools/list request
 func (m *MCPProtocol) handleToolsList(req *MCPRequest) error {
-	tools := []Tool{
-		{
-			Name:        "logc_get_event_log",
-			Description: "Get event log entries from 1C journal (Journal Registratsii). IMPORTANT: Always start with mode='minimal' (default) to save tokens (~60-70% reduction). Only switch to mode='full' if minimal data is insufficient for error analysis or detailed investigation.\n\nDefaults (if not specified):\n- mode='minimal' (saves tokens)\n- level='Error' (only errors)\n- from/to=last 10 minutes (if not specified)\n\nBefore calling this tool:\n1. Read the file 'configs/cluster_map.yaml' using the Read tool\n2. Extract cluster_guid from the 'clusters' section\n3. Extract infobase_guid from the 'infobases' section\n4. Use these exact GUID values in your tool call\n\nExample workflow:\n1. Read configs/cluster_map.yaml\n2. Extract GUIDs\n3. Call: logc_get_event_log(cluster_guid='<from-config>', infobase_guid='<from-config>') - will use defaults: minimal mode, Error level, last 10 minutes\n4. If minimal insufficient → retry with mode='full'",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"cluster_guid":  map[string]interface{}{"type": "string"},
-					"infobase_guid": map[string]interface{}{"type": "string"},
-					"from":          map[string]interface{}{"type": "string", "format": "date-time"},
-					"to":            map[string]interface{}{"type": "string", "format": "date-time"},
-					"level":         map[string]interface{}{"type": "string", "enum": []string{"Error", "Warning", "Information", "Note"}},
-					"mode":          map[string]interface{}{"type": "string", "enum": []string{"minimal", "full"}},
-					"limit":         map[string]interface{}{"type": "integer"},
-				},
-				"required": []string{"cluster_guid", "infobase_guid"},
-			},
-		},
-		{
-			Name:        "logc_get_tech_log",
-			Description: "Get tech log entries from 1C technological journal",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"cluster_guid":  map[string]interface{}{"type": "string"},
-					"infobase_guid": map[string]interface{}{"type": "string"},
-					"from":          map[string]interface{}{"type": "string", "format": "date-time"},
-					"to":            map[string]interface{}{"type": "string", "format": "date-time"},
-					"name":          map[string]interface{}{"type": "string"},
-					"mode":          map[string]interface{}{"type": "string", "enum": []string{"minimal", "full"}},
-					"limit":         map[string]interface{}{"type": "integer"},
-				},
-				"required": []string{"cluster_guid", "infobase_guid", "from", "to"},
-			},
-		},
-		{
-			Name:        "logc_configure_techlog",
-			Description: "Configure technological journal logcfg.xml",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"cluster_guid":  map[string]interface{}{"type": "string"},
-					"infobase_guid": map[string]interface{}{"type": "string"},
-					"location":      map[string]interface{}{"type": "string"},
-					"history":       map[string]interface{}{"type": "integer"},
-					"format":        map[string]interface{}{"type": "string", "enum": []string{"text", "json"}},
-					"events":        map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
-					"properties":    map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
-					"config_path":   map[string]interface{}{"type": "string"},
-				},
-				"required": []string{"cluster_guid", "infobase_guid", "location", "history", "events"},
-			},
-		},
-		{
-			Name:        "logc_save_techlog",
-			Description: "Save current techlog config as backup",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"config_path": map[string]interface{}{"type": "string"},
-				},
-			},
-		},
-		{
-			Name:        "logc_restore_techlog",
-			Description: "Restore techlog config from backup",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"config_path": map[string]interface{}{"type": "string"},
-				},
-			},
-		},
-		{
-			Name:        "logc_disable_techlog",
-			Description: "Disable technological journal",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"config_path": map[string]interface{}{"type": "string"},
-				},
-			},
-		},
-		{
-			Name:        "logc_get_techlog_config",
-			Description: "Get current techlog configuration",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"config_path": map[string]interface{}{"type": "string"},
-				},
-			},
-		},
-		{
-			Name:        "logc_get_actual_log_timestamp",
-			Description: "Get maximum timestamp from tech log for infobase",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"base_id": map[string]interface{}{"type": "string"},
-				},
-				"required": []string{"base_id"},
-			},
-		},
+	log.Info().Int("tools_count", len(m.tools)).Msg("Handling tools/list request")
+	
+	// Use cached tools loaded from tools.json
+	tools := m.tools
+	
+	// If tools are empty (fallback case), return empty list
+	if len(tools) == 0 {
+		log.Warn().Msg("No tools loaded, returning empty list")
+	} else {
+		log.Info().Msgf("Returning %d tools", len(tools))
+		for i, tool := range tools {
+			log.Debug().Int("index", i).Str("name", tool.Name).Msg("Tool")
+		}
 	}
 
 	response := MCPResponse{
@@ -295,6 +261,7 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) error {
 		},
 	}
 
+	log.Debug().Interface("response", response).Msg("Sending tools/list response")
 	return m.writeJSON(response)
 }
 
@@ -556,9 +523,26 @@ func (m *MCPProtocol) sendError(id interface{}, code int, message string, data i
 func (m *MCPProtocol) writeJSON(v interface{}) error {
 	data, err := json.Marshal(v)
 	if err != nil {
+		log.Error().Err(err).Msg("Failed to marshal JSON")
 		return err
 	}
 	data = append(data, '\n')
-	_, err = m.stdout.Write(data)
-	return err
+	
+	// Write to stdout and flush to ensure data is sent immediately
+	n, err := m.stdout.Write(data)
+	if err != nil {
+		log.Error().Err(err).Int("bytes_written", n).Msg("Failed to write to stdout")
+		return err
+	}
+	
+	// Flush stdout if it's a Flusher (buffered writer)
+	if flusher, ok := m.stdout.(interface{ Flush() error }); ok {
+		if err := flusher.Flush(); err != nil {
+			log.Error().Err(err).Msg("Failed to flush stdout")
+			return err
+		}
+	}
+	
+	log.Debug().Int("bytes_written", n).Msg("JSON written to stdout")
+	return nil
 }

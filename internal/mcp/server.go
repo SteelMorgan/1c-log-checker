@@ -7,12 +7,14 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/SteelMorgan/1c-log-checker/internal/clickhouse"
 	"github.com/SteelMorgan/1c-log-checker/internal/config"
 	"github.com/SteelMorgan/1c-log-checker/internal/handlers"
 	"github.com/SteelMorgan/1c-log-checker/internal/mapping"
+	"github.com/SteelMorgan/1c-log-checker/internal/ratelimit"
 	"github.com/rs/zerolog/log"
 )
 
@@ -22,6 +24,7 @@ type Server struct {
 	httpServer  *http.Server
 	chClient    *clickhouse.Client
 	clusterMap  *mapping.ClusterMap
+	rateLimiter *ratelimit.Limiter
 
 	// Handlers
 	eventLogHandler           *handlers.EventLogHandler
@@ -36,11 +39,20 @@ type Server struct {
 
 // NewServer creates a new MCP server
 func NewServer(cfg *config.Config) (*Server, error) {
+	log.Info().Msg("Initializing MCP server...")
 	if cfg == nil {
 		return nil, fmt.Errorf("config is required")
 	}
 
+	log.Info().
+		Str("clickhouse_host", cfg.ClickHouseHost).
+		Int("clickhouse_port", cfg.ClickHousePort).
+		Str("clickhouse_db", cfg.ClickHouseDB).
+		Int("mcp_port", cfg.MCPPort).
+		Msg("MCP server configuration")
+
 	// Connect to ClickHouse with retry configuration
+	log.Info().Msg("Connecting to ClickHouse...")
 	chClient, err := clickhouse.NewClientFromConfig(
 		cfg.ClickHouseHost,
 		cfg.ClickHousePort,
@@ -74,10 +86,14 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	getTechCfgHandler := handlers.NewGetTechLogConfigHandler()
 	getActualLogTimestampHandler := handlers.NewGetActualLogTimestampHandler(chClient)
 
+	// Initialize rate limiter (100 requests per second, burst of 20)
+	rateLimiter := ratelimit.NewLimiter(100, 20)
+
 	return &Server{
 		cfg:                       cfg,
 		chClient:                  chClient,
 		clusterMap:                clusterMap,
+		rateLimiter:               rateLimiter,
 		eventLogHandler:           eventLogHandler,
 		techLogHandler:            techLogHandler,
 		configureTechHandler:      configureTechHandler,
@@ -110,24 +126,41 @@ func (s *Server) startHTTP(ctx context.Context) error {
 	// Setup HTTP server with MCP tool endpoints
 	mux := http.NewServeMux()
 
-	// Register tool endpoints
-	mux.HandleFunc("/tools/logc_get_event_log", s.handleGetEventLog)
-	mux.HandleFunc("/tools/logc_get_tech_log", s.handleGetTechLog)
-	mux.HandleFunc("/tools/logc_configure_techlog", s.handleConfigureTechLog)
-	mux.HandleFunc("/tools/logc_save_techlog", s.handleSaveTechLog)
-	mux.HandleFunc("/tools/logc_restore_techlog", s.handleRestoreTechLog)
-	mux.HandleFunc("/tools/logc_disable_techlog", s.handleDisableTechLog)
-	mux.HandleFunc("/tools/logc_get_techlog_config", s.handleGetTechLogConfig)
-	mux.HandleFunc("/tools/logc_get_actual_log_timestamp", s.handleGetActualLogTimestamp)
-
-	// Health check
+	// Register specific endpoints first (more specific paths before generic ones)
+	// Health check (no rate limiting)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
 
+	// Register tool endpoints with rate limiting (legacy REST API)
+	mux.Handle("/tools/logc_get_event_log", s.rateLimiter.HTTPMiddleware(http.HandlerFunc(s.handleGetEventLog)))
+	mux.Handle("/tools/logc_get_tech_log", s.rateLimiter.HTTPMiddleware(http.HandlerFunc(s.handleGetTechLog)))
+	mux.Handle("/tools/logc_configure_techlog", s.rateLimiter.HTTPMiddleware(http.HandlerFunc(s.handleConfigureTechLog)))
+	mux.Handle("/tools/logc_save_techlog", s.rateLimiter.HTTPMiddleware(http.HandlerFunc(s.handleSaveTechLog)))
+	mux.Handle("/tools/logc_restore_techlog", s.rateLimiter.HTTPMiddleware(http.HandlerFunc(s.handleRestoreTechLog)))
+	mux.Handle("/tools/logc_disable_techlog", s.rateLimiter.HTTPMiddleware(http.HandlerFunc(s.handleDisableTechLog)))
+	mux.Handle("/tools/logc_get_techlog_config", s.rateLimiter.HTTPMiddleware(http.HandlerFunc(s.handleGetTechLogConfig)))
+	mux.Handle("/tools/logc_get_actual_log_timestamp", s.rateLimiter.HTTPMiddleware(http.HandlerFunc(s.handleGetActualLogTimestamp)))
+
+	// MCP protocol endpoints (JSON-RPC over HTTP) - register last as fallback
+	// Standard MCP HTTP transport uses root path "/" for JSON-RPC requests
+	mux.HandleFunc("/mcp", s.handleMCPRequest) // Also support /mcp for compatibility
+	mux.HandleFunc("/", s.handleMCPRequest) // Main MCP endpoint for JSON-RPC requests (fallback for all other paths)
+
+	// Wrap mux with logging middleware to see all requests
+	loggingMux := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log.Info().
+			Str("method", r.Method).
+			Str("path", r.URL.Path).
+			Str("remote_addr", r.RemoteAddr).
+			Str("content_type", r.Header.Get("Content-Type")).
+			Msg("HTTP request received")
+		mux.ServeHTTP(w, r)
+	})
+
 	s.httpServer = &http.Server{
 		Addr:    fmt.Sprintf(":%d", s.cfg.MCPPort),
-		Handler: mux,
+		Handler: loggingMux,
 	}
 
 	// Start HTTP server in goroutine
@@ -148,7 +181,10 @@ func (s *Server) startHTTP(ctx context.Context) error {
 func (s *Server) startStdio(ctx context.Context) error {
 	log.Info().Msg("MCP server starting in stdio mode...")
 	
-	protocol := NewMCPProtocol(s)
+	protocol, err := NewMCPProtocol(s)
+	if err != nil {
+		return fmt.Errorf("failed to create MCP protocol: %w", err)
+	}
 	return protocol.Start(ctx)
 }
 
@@ -577,5 +613,158 @@ func (s *Server) handleGetActualLogTimestamp(w http.ResponseWriter, r *http.Requ
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(result))
+}
+
+// handleMCPRequest handles MCP protocol requests over HTTP (JSON-RPC)
+// This allows MCP clients to connect via HTTP instead of stdio
+func (s *Server) handleMCPRequest(w http.ResponseWriter, r *http.Request) {
+	log.Info().
+		Str("method", r.Method).
+		Str("path", r.URL.Path).
+		Str("remote_addr", r.RemoteAddr).
+		Msg("MCP HTTP request received")
+	
+	// Only handle POST requests for JSON-RPC
+	if r.Method != http.MethodPost {
+		log.Warn().Str("method", r.Method).Str("path", r.URL.Path).Msg("Method not allowed for MCP request")
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Parse JSON-RPC request
+	var req struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      interface{}     `json:"id"`
+		Method  string          `json:"method"`
+		Params  json.RawMessage `json:"params,omitempty"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// Create MCP protocol handler
+	protocol, err := NewMCPProtocol(s)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to create MCP protocol handler")
+		http.Error(w, fmt.Sprintf("Internal error: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Convert to MCPRequest format
+	mcpReq := &MCPRequest{
+		JSONRPC: req.JSONRPC,
+		ID:      req.ID,
+		Method:  req.Method,
+		Params:  req.Params,
+	}
+
+	// Handle the request directly without capturing stdout
+	// For HTTP mode, we need to handle responses differently than stdio
+	// because notifications (like "initialized") should not be sent in HTTP responses
+	
+	// Create a custom handler that captures only the response, not notifications
+	var mcpResponse map[string]interface{}
+	
+	// For initialize method, handle specially to avoid sending initialized notification
+	if req.Method == "initialize" {
+		// Handle initialize without sending initialized notification
+		var initReq struct {
+			ProtocolVersion string                 `json:"protocolVersion"`
+			Capabilities    map[string]interface{} `json:"capabilities"`
+			ClientInfo      struct {
+				Name    string `json:"name"`
+				Version string `json:"version"`
+			} `json:"clientInfo"`
+		}
+		if err := json.Unmarshal(req.Params, &initReq); err != nil {
+			log.Error().Err(err).Msg("Failed to parse initialize params")
+			http.Error(w, fmt.Sprintf("Invalid params: %v", err), http.StatusBadRequest)
+			return
+		}
+		
+		log.Info().
+			Str("client_name", initReq.ClientInfo.Name).
+			Str("client_version", initReq.ClientInfo.Version).
+			Str("protocol_version", initReq.ProtocolVersion).
+			Msg("Initialize request received")
+		
+		// Return initialize response without initialized notification
+		mcpResponse = map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      req.ID,
+			"result": map[string]interface{}{
+				"protocolVersion": "2024-11-05",
+				"capabilities": map[string]interface{}{
+					"tools": map[string]interface{}{},
+				},
+				"serverInfo": map[string]interface{}{
+					"name":    "1c-log-checker",
+					"version": "0.1.0",
+				},
+			},
+		}
+	} else {
+		// For other methods (tools/list, tools/call), use protocol handler
+		// Create response capture
+		var responseData []byte
+		responseWriter := &responseCapture{data: &responseData}
+		
+		// Temporarily replace stdout to capture response
+		oldStdout := protocol.stdout
+		protocol.stdout = responseWriter
+		defer func() { protocol.stdout = oldStdout }()
+
+		// Handle the request
+		if err := protocol.handleRequest(r.Context(), mcpReq); err != nil {
+			log.Error().Err(err).Str("method", req.Method).Msg("Failed to handle MCP request")
+			http.Error(w, fmt.Sprintf("Internal error: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		// Parse captured response
+		// Response may contain multiple JSON objects (response + notification)
+		// We need to parse only the first one (the actual response)
+		responseStr := string(responseData)
+		
+		// Find the first complete JSON object (ends with newline or is the only object)
+		lines := strings.Split(responseStr, "\n")
+		var firstJSONLine string
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line != "" {
+				firstJSONLine = line
+				break
+			}
+		}
+		
+		if firstJSONLine == "" {
+			log.Error().Str("raw_response", responseStr).Msg("No JSON found in response")
+			http.Error(w, "Internal error: empty response", http.StatusInternalServerError)
+			return
+		}
+		
+		if err := json.Unmarshal([]byte(firstJSONLine), &mcpResponse); err != nil {
+			log.Error().Err(err).Str("raw_response", firstJSONLine).Msg("Failed to parse MCP response")
+			http.Error(w, fmt.Sprintf("Internal error: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Send response
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(mcpResponse)
+}
+
+// responseCapture captures written data
+type responseCapture struct {
+	data *[]byte
+}
+
+func (w *responseCapture) Write(data []byte) (int, error) {
+	*w.data = append(*w.data, data...)
+	return len(data), nil
 }
 

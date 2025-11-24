@@ -42,5 +42,3 @@ CREATE INDEX IF NOT EXISTS idx_parser_metrics_type ON logs.parser_metrics (parse
 CREATE INDEX IF NOT EXISTS idx_parser_metrics_file_path ON logs.parser_metrics (file_path) TYPE bloom_filter(0.01) GRANULARITY 1;
 
 
-
-

@@ -748,9 +748,8 @@ func tokenizeRecord(line string) ([]string, error) {
 }
 
 // parseLgpTimestamp parses timestamp in format YYYYMMDDHHMMSS
-// 1C stores timestamps in local time (MSK for Russian installations)
-// We parse as UTC to match ClickHouse storage (ClickHouse stores DateTime in UTC)
-// The timestamp from 1C log is already in local time, so we treat it as UTC
+// 1C stores timestamps in local timezone of the server (determined by TZ environment variable)
+// We parse the timestamp as local time and convert to UTC for ClickHouse storage
 func parseLgpTimestamp(s string) (time.Time, error) {
 	if len(s) != 14 {
 		return time.Time{}, fmt.Errorf("invalid timestamp length: %d", len(s))
@@ -763,10 +762,30 @@ func parseLgpTimestamp(s string) (time.Time, error) {
 	min, _ := strconv.Atoi(s[10:12])
 	sec, _ := strconv.Atoi(s[12:14])
 
-	// Parse as UTC - 1C logs store time in local timezone (MSK), but we need UTC for ClickHouse
-	// Note: This assumes 1C log timestamps are in MSK. If your 1C server uses different timezone,
-	// you may need to adjust this or add timezone configuration.
-	return time.Date(year, time.Month(month), day, hour, min, sec, 0, time.UTC), nil
+	// Get timezone from TZ environment variable (defaults to UTC if not set)
+	tzName := os.Getenv("TZ")
+	if tzName == "" {
+		tzName = "UTC"
+	}
+
+	// Load timezone location
+	loc, err := time.LoadLocation(tzName)
+	if err != nil {
+		// If timezone loading fails, log warning and use UTC
+		log.Warn().
+			Str("timezone", tzName).
+			Err(err).
+			Msg("Failed to load timezone from TZ environment variable, using UTC")
+		loc = time.UTC
+	}
+
+	// Parse timestamp as local time in the specified timezone (timezone of 1C server logs)
+	localTime := time.Date(year, time.Month(month), day, hour, min, sec, 0, loc)
+
+	// Convert to UTC for ClickHouse storage
+	// Note: ClickHouse server is configured to use UTC timezone (see docker-compose.yml)
+	// So we pass UTC time and ClickHouse stores it correctly as UTC
+	return localTime.UTC(), nil
 }
 
 // parseTransactionFromHex parses transaction field {transaction_date_hex, transaction_number_hex}

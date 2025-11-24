@@ -461,3 +461,5 @@ userName := lgfReader.GetObjectValue(eventlog.ObjectTypeUsers, userNumber, ctx)
 **Дата создания отчета:** 2025-01-XX  
 **Статус:** Готов к принятию решения
 
+
+

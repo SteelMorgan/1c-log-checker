@@ -78,6 +78,12 @@ func (h *EventLogHandler) GetEventLog(ctx context.Context, params EventLogParams
 		params.Limit = 1000
 	}
 
+	// Validate limit
+	if err := ValidateLimit(params.Limit); err != nil {
+		endSpanWithError(span, err, "validation failed")
+		return "", err
+	}
+
 	// Build query and scan results based on mode
 	var jsonData []byte
 

@@ -16,10 +16,20 @@ import (
 func InitLogger(level string, logFile string) {
 	var writers []io.Writer
 
-	// Always write to stdout with console formatting
+	// For stdio mode (MCP), write logs to stderr to avoid interfering with JSON-RPC on stdout
+	// For HTTP mode, stdout is fine
+	// Check if running in stdio mode by checking if MCP_MODE=stdio or if no port is configured
+	mcpMode := os.Getenv("MCP_MODE")
+	logOutput := os.Stdout
+	if mcpMode == "stdio" || (mcpMode == "" && logFile == "") {
+		// Likely stdio mode - use stderr for logs
+		logOutput = os.Stderr
+	}
+	
 	consoleWriter := zerolog.ConsoleWriter{
-		Out:        os.Stdout,
+		Out:        logOutput,
 		TimeFormat: "2006-01-02 15:04:05",
+		NoColor:    true, // Disable colors for better compatibility
 	}
 	writers = append(writers, consoleWriter)
 

@@ -2,7 +2,7 @@
 -- Schema based on 1C Configurator UI (screenshot reference)
 CREATE TABLE IF NOT EXISTS logs.event_log (
     -- Основные колонки (Primary View)
-    event_time DateTime64(6) CODEC(Delta, ZSTD),
+    event_time DateTime64(6, 'UTC') CODEC(Delta, ZSTD),  -- UTC timezone for correct Grafana $__timeFilter behavior
     event_date Date MATERIALIZED toDate(event_time),
     
     -- Идентификация базы/кластера
@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS logs.event_log (
     transaction_status String CODEC(ZSTD),     -- Статус транзакции
     transaction_id String CODEC(ZSTD),         -- Идентификатор транзакции
     transaction_number Int64 CODEC(T64, ZSTD), -- Номер транзакции
-    transaction_datetime DateTime64(6) CODEC(Delta, ZSTD), -- Дата/время транзакции
+    transaction_datetime DateTime64(6, 'UTC') CODEC(Delta, ZSTD), -- Дата/время транзакции (UTC)
     
     -- Разделение данных сеанса
     data_separation String CODEC(ZSTD),        -- Разделение данных сеанса

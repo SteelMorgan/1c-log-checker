@@ -208,5 +208,3 @@ docker inspect 1c-log-clickhouse --format='{{json .HostConfig}}' | ConvertFrom-J
 - **Рекомендация**: Начать с 4 CPU и 4 GB памяти, затем корректировать по результатам мониторинга
 
 
-
-

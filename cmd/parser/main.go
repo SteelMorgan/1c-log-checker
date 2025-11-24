@@ -3,11 +3,14 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/SteelMorgan/1c-log-checker/internal/config"
+	"github.com/SteelMorgan/1c-log-checker/internal/health"
+	"github.com/SteelMorgan/1c-log-checker/internal/metrics"
 	"github.com/SteelMorgan/1c-log-checker/internal/observability"
 	"github.com/SteelMorgan/1c-log-checker/internal/service"
 	"github.com/rs/zerolog/log"
@@ -62,6 +65,29 @@ func main() {
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	// Start health check and metrics server (if ClickHouse connection is available)
+	var healthChecker *health.Checker
+	if parserSvc.GetClickHouseConn() != nil {
+		healthChecker = health.NewChecker(parserSvc.GetClickHouseConn())
+		healthMux := http.NewServeMux()
+		healthMux.HandleFunc("/health", healthChecker.HTTPHandler())
+		
+		// Add Prometheus metrics endpoint
+		healthMux.Handle("/metrics", metrics.HTTPHandler())
+		
+		healthServer := &http.Server{
+			Addr:    ":8081",
+			Handler: healthMux,
+		}
+		go func() {
+			if err := healthServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Error().Err(err).Msg("Health check server error")
+			}
+		}()
+		log.Info().Str("port", "8081").Msg("Health check and metrics server started")
+		defer healthServer.Shutdown(context.Background())
+	}
 
 	// Start parser service
 	errChan := make(chan error, 1)

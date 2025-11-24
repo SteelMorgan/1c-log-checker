@@ -2,6 +2,7 @@ package techlog
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -88,15 +89,31 @@ func parsePlainTimestamp(line string, record *domain.TechLogRecord) (string, err
 	durStr := timestampPart[lastDash+1:]
 	
 	// Parse timestamp (ISO format)
-	// 1C stores timestamps in local timezone (MSK for Russian installations)
-	// We parse as UTC to match ClickHouse storage (same as Event Log parsing)
-	// Note: time.Parse without timezone returns UTC by default
+	// 1C stores timestamps in local timezone (determined by TZ environment variable)
+	// Parse timestamp as local time and convert to UTC for ClickHouse storage
 	ts, err := time.Parse("2006-01-02T15:04:05.000000", tsStr)
 	if err != nil {
 		return "", fmt.Errorf("invalid timestamp: %w", err)
 	}
-	// Ensure UTC timezone (time.Parse returns UTC by default, but be explicit)
-	record.Timestamp = ts.UTC()
+	
+	// Get timezone from TZ environment variable (defaults to UTC if not set)
+	tzName := os.Getenv("TZ")
+	if tzName == "" {
+		tzName = "UTC"
+	}
+	
+	// Load timezone location
+	loc, err := time.LoadLocation(tzName)
+	if err != nil {
+		// If timezone loading fails, use UTC
+		loc = time.UTC
+	}
+	
+	// Interpret parsed time as local time in the specified timezone
+	localTime := time.Date(ts.Year(), ts.Month(), ts.Day(), ts.Hour(), ts.Minute(), ts.Second(), ts.Nanosecond(), loc)
+	
+	// Convert to UTC for ClickHouse storage
+	record.Timestamp = localTime.UTC()
 	
 	// Parse duration (microseconds)
 	duration, err := strconv.ParseUint(durStr, 10, 64)
@@ -155,13 +172,31 @@ func parseHierarchicalTimestamp(line string, record *domain.TechLogRecord, fileT
 	
 	// Use timestamp from filename (extracted from yymmddhh pattern)
 	// fileTimestamp already has year, month, day, hour set
-	// 1C stores timestamps in local timezone (MSK for Russian installations)
-	// We parse as UTC to match ClickHouse storage (same as Event Log parsing)
-	record.Timestamp = time.Date(
+	// 1C stores timestamps in local timezone (determined by TZ environment variable)
+	// Parse timestamp as local time and convert to UTC for ClickHouse storage
+	
+	// Get timezone from TZ environment variable (defaults to UTC if not set)
+	tzName := os.Getenv("TZ")
+	if tzName == "" {
+		tzName = "UTC"
+	}
+	
+	// Load timezone location
+	loc, err := time.LoadLocation(tzName)
+	if err != nil {
+		// If timezone loading fails, use UTC
+		loc = time.UTC
+	}
+	
+	// Create local time in the specified timezone
+	localTime := time.Date(
 		fileTimestamp.Year(), fileTimestamp.Month(), fileTimestamp.Day(),
 		fileTimestamp.Hour(), minutes, seconds, microsec*1000,
-		time.UTC, // Use UTC to match Event Log parsing behavior
+		loc,
 	)
+	
+	// Convert to UTC for ClickHouse storage
+	record.Timestamp = localTime.UTC()
 	
 	// Parse duration
 	duration, err := strconv.ParseUint(parts[1], 10, 64)
