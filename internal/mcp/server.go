@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/SteelMorgan/1c-log-checker/internal/clickhouse"
@@ -27,13 +26,13 @@ type Server struct {
 	rateLimiter *ratelimit.Limiter
 
 	// Handlers
-	eventLogHandler           *handlers.EventLogHandler
-	techLogHandler            *handlers.TechLogHandler
-	configureTechHandler      *handlers.ConfigureTechLogHandler
-	saveTechHandler           *handlers.SaveTechLogHandler
-	restoreTechHandler        *handlers.RestoreTechLogHandler
-	disableTechHandler        *handlers.DisableTechLogHandler
-	getTechCfgHandler        *handlers.GetTechLogConfigHandler
+	eventLogHandler              *handlers.EventLogHandler
+	techLogHandler               *handlers.TechLogHandler
+	configureTechHandler         *handlers.ConfigureTechLogHandler
+	saveTechHandler              *handlers.SaveTechLogHandler
+	restoreTechHandler           *handlers.RestoreTechLogHandler
+	disableTechHandler           *handlers.DisableTechLogHandler
+	getTechCfgHandler            *handlers.GetTechLogConfigHandler
 	getActualLogTimestampHandler *handlers.GetActualLogTimestampHandler
 }
 
@@ -90,17 +89,17 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	rateLimiter := ratelimit.NewLimiter(100, 20)
 
 	return &Server{
-		cfg:                       cfg,
-		chClient:                  chClient,
-		clusterMap:                clusterMap,
-		rateLimiter:               rateLimiter,
-		eventLogHandler:           eventLogHandler,
-		techLogHandler:            techLogHandler,
-		configureTechHandler:      configureTechHandler,
-		saveTechHandler:           saveTechHandler,
-		restoreTechHandler:        restoreTechHandler,
-		disableTechHandler:        disableTechHandler,
-		getTechCfgHandler:         getTechCfgHandler,
+		cfg:                          cfg,
+		chClient:                     chClient,
+		clusterMap:                   clusterMap,
+		rateLimiter:                  rateLimiter,
+		eventLogHandler:              eventLogHandler,
+		techLogHandler:               techLogHandler,
+		configureTechHandler:         configureTechHandler,
+		saveTechHandler:              saveTechHandler,
+		restoreTechHandler:           restoreTechHandler,
+		disableTechHandler:           disableTechHandler,
+		getTechCfgHandler:            getTechCfgHandler,
 		getActualLogTimestampHandler: getActualLogTimestampHandler,
 	}, nil
 }
@@ -142,19 +141,32 @@ func (s *Server) startHTTP(ctx context.Context) error {
 	mux.Handle("/tools/logc_get_techlog_config", s.rateLimiter.HTTPMiddleware(http.HandlerFunc(s.handleGetTechLogConfig)))
 	mux.Handle("/tools/logc_get_actual_log_timestamp", s.rateLimiter.HTTPMiddleware(http.HandlerFunc(s.handleGetActualLogTimestamp)))
 
-	// MCP protocol endpoints (JSON-RPC over HTTP) - register last as fallback
-	// Standard MCP HTTP transport uses root path "/" for JSON-RPC requests
-	mux.HandleFunc("/mcp", s.handleMCPRequest) // Also support /mcp for compatibility
-	mux.HandleFunc("/", s.handleMCPRequest) // Main MCP endpoint for JSON-RPC requests (fallback for all other paths)
+	// MCP protocol endpoints (JSON-RPC over HTTP)
+	// MCP HTTP transport may use different paths, so register multiple endpoints
+	mux.HandleFunc("/mcp", s.handleMCPRequest)      // Explicit /mcp endpoint
+	mux.HandleFunc("/sse", s.handleMCPRequest)      // SSE endpoint (some clients use this)
+	mux.HandleFunc("/messages", s.handleMCPRequest) // Messages endpoint (some clients use this)
+	mux.HandleFunc("/", s.handleMCPRequest)         // Root endpoint (fallback for all other paths)
 
 	// Wrap mux with logging middleware to see all requests
+	// This MUST be called for every request, so if we don't see logs, requests aren't reaching the server
 	loggingMux := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Force immediate logging to stderr for debugging (this should ALWAYS appear)
+		fmt.Fprintf(os.Stderr, "[LOGGING_MUX] %s %s from %s\n", r.Method, r.URL.Path, r.RemoteAddr)
+		fmt.Fprintf(os.Stderr, "[LOGGING_MUX] URL: %s, Host: %s\n", r.URL.String(), r.Host)
+
+		// Force log to both stdout and file
 		log.Info().
 			Str("method", r.Method).
 			Str("path", r.URL.Path).
 			Str("remote_addr", r.RemoteAddr).
 			Str("content_type", r.Header.Get("Content-Type")).
+			Str("url", r.URL.String()).
+			Str("host", r.Host).
+			Str("step", "LOGGING_MUX").
 			Msg("HTTP request received")
+
+		// Call the actual mux
 		mux.ServeHTTP(w, r)
 	})
 
@@ -180,7 +192,7 @@ func (s *Server) startHTTP(ctx context.Context) error {
 // startStdio starts the MCP server in stdio mode
 func (s *Server) startStdio(ctx context.Context) error {
 	log.Info().Msg("MCP server starting in stdio mode...")
-	
+
 	protocol, err := NewMCPProtocol(s)
 	if err != nil {
 		return fmt.Errorf("failed to create MCP protocol: %w", err)
@@ -618,15 +630,34 @@ func (s *Server) handleGetActualLogTimestamp(w http.ResponseWriter, r *http.Requ
 // handleMCPRequest handles MCP protocol requests over HTTP (JSON-RPC)
 // This allows MCP clients to connect via HTTP instead of stdio
 func (s *Server) handleMCPRequest(w http.ResponseWriter, r *http.Request) {
+	// Force immediate logging to ensure it's written
 	log.Info().
 		Str("method", r.Method).
 		Str("path", r.URL.Path).
 		Str("remote_addr", r.RemoteAddr).
+		Str("url", r.URL.String()).
+		Str("host", r.Host).
 		Msg("MCP HTTP request received")
-	
+
+	// Also log to stderr for immediate visibility
+	fmt.Fprintf(os.Stderr, "[MCP] Request: %s %s from %s\n", r.Method, r.URL.Path, r.RemoteAddr)
+	os.Stderr.Sync()
+	log.Info().
+		Str("step", "MCP").
+		Str("method", r.Method).
+		Str("path", r.URL.Path).
+		Str("remote_addr", r.RemoteAddr).
+		Msg("MCP request received (stderr)")
+
 	// Only handle POST requests for JSON-RPC
 	if r.Method != http.MethodPost {
 		log.Warn().Str("method", r.Method).Str("path", r.URL.Path).Msg("Method not allowed for MCP request")
+		fmt.Fprintf(os.Stderr, "[MCP] ERROR: Method not allowed: %s\n", r.Method)
+		os.Stderr.Sync()
+		log.Error().
+			Str("step", "MCP").
+			Str("method", r.Method).
+			Msg("Method not allowed (stderr)")
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -639,132 +670,218 @@ func (s *Server) handleMCPRequest(w http.ResponseWriter, r *http.Request) {
 		Params  json.RawMessage `json:"params,omitempty"`
 	}
 
+	log.Info().Msg("[BEFORE STEP 1] About to parse JSON-RPC request body")
+	fmt.Fprintf(os.Stderr, "[STEP 1] Starting JSON decode from request body\n")
+	os.Stderr.Sync()
+	log.Info().Str("step", "STEP 1").Msg("Starting JSON decode from request body")
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		fmt.Fprintf(os.Stderr, "[STEP 1 ERROR] Failed to decode JSON: %v\n", err)
+		os.Stderr.Sync()
+		log.Error().Str("step", "STEP 1").Err(err).Msg("Failed to decode JSON")
 		http.Error(w, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
 		return
 	}
+	fmt.Fprintf(os.Stderr, "[STEP 1 OK] JSON decoded: method=%s, id=%v, params_len=%d\n", req.Method, req.ID, len(req.Params))
+	os.Stderr.Sync()
+	log.Info().
+		Str("step", "STEP 1").
+		Str("method", req.Method).
+		Interface("id", req.ID).
+		Int("params_len", len(req.Params)).
+		Msg("JSON decoded successfully")
 
-	// Create MCP protocol handler
-	protocol, err := NewMCPProtocol(s)
+	// Create MCP protocol handler with skipNotifications=true for HTTP mode
+	fmt.Fprintf(os.Stderr, "[STEP 2] Creating MCP protocol handler\n")
+	os.Stderr.Sync()
+	log.Info().Str("step", "STEP 2").Msg("Creating MCP protocol handler")
+	log.Info().Msg("Creating MCP protocol handler with skipNotifications=true for HTTP mode")
+	protocol, err := NewMCPProtocolWithOptions(s, true)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "[STEP 2 ERROR] Failed to create protocol: %v\n", err)
+		os.Stderr.Sync()
+		log.Error().Str("step", "STEP 2").Err(err).Msg("Failed to create protocol")
 		log.Error().Err(err).Msg("Failed to create MCP protocol handler")
 		http.Error(w, fmt.Sprintf("Internal error: %v", err), http.StatusInternalServerError)
 		return
 	}
+	fmt.Fprintf(os.Stderr, "[STEP 2 OK] Protocol handler created\n")
+	os.Stderr.Sync()
+	log.Info().Str("step", "STEP 2").Bool("skip_notifications", protocol.skipNotifications).Msg("Protocol handler created")
+	log.Info().Bool("skip_notifications", protocol.skipNotifications).Msg("MCP protocol handler created")
 
 	// Convert to MCPRequest format
+	fmt.Fprintf(os.Stderr, "[STEP 3] Converting to MCPRequest format\n")
+	os.Stderr.Sync()
+	log.Info().Str("step", "STEP 3").Msg("Converting to MCPRequest format")
 	mcpReq := &MCPRequest{
 		JSONRPC: req.JSONRPC,
 		ID:      req.ID,
 		Method:  req.Method,
 		Params:  req.Params,
 	}
+	fmt.Fprintf(os.Stderr, "[STEP 3 OK] MCPRequest created: method=%s, id=%v\n", mcpReq.Method, mcpReq.ID)
+	os.Stderr.Sync()
+	log.Info().
+		Str("step", "STEP 3").
+		Str("method", mcpReq.Method).
+		Interface("id", mcpReq.ID).
+		Msg("MCPRequest created")
 
-	// Handle the request directly without capturing stdout
-	// For HTTP mode, we need to handle responses differently than stdio
-	// because notifications (like "initialized") should not be sent in HTTP responses
-	
-	// Create a custom handler that captures only the response, not notifications
-	var mcpResponse map[string]interface{}
-	
-	// For initialize method, handle specially to avoid sending initialized notification
-	if req.Method == "initialize" {
-		// Handle initialize without sending initialized notification
-		var initReq struct {
-			ProtocolVersion string                 `json:"protocolVersion"`
-			Capabilities    map[string]interface{} `json:"capabilities"`
-			ClientInfo      struct {
-				Name    string `json:"name"`
-				Version string `json:"version"`
-			} `json:"clientInfo"`
-		}
-		if err := json.Unmarshal(req.Params, &initReq); err != nil {
-			log.Error().Err(err).Msg("Failed to parse initialize params")
-			http.Error(w, fmt.Sprintf("Invalid params: %v", err), http.StatusBadRequest)
-			return
-		}
-		
-		log.Info().
-			Str("client_name", initReq.ClientInfo.Name).
-			Str("client_version", initReq.ClientInfo.Version).
-			Str("protocol_version", initReq.ProtocolVersion).
-			Msg("Initialize request received")
-		
-		// Return initialize response without initialized notification
-		mcpResponse = map[string]interface{}{
-			"jsonrpc": "2.0",
-			"id":      req.ID,
-			"result": map[string]interface{}{
-				"protocolVersion": "2024-11-05",
-				"capabilities": map[string]interface{}{
-					"tools": map[string]interface{}{},
-				},
-				"serverInfo": map[string]interface{}{
-					"name":    "1c-log-checker",
-					"version": "0.1.0",
-				},
-			},
-		}
-	} else {
-		// For other methods (tools/list, tools/call), use protocol handler
-		// Create response capture
-		var responseData []byte
-		responseWriter := &responseCapture{data: &responseData}
-		
-		// Temporarily replace stdout to capture response
-		oldStdout := protocol.stdout
-		protocol.stdout = responseWriter
-		defer func() { protocol.stdout = oldStdout }()
-
-		// Handle the request
-		if err := protocol.handleRequest(r.Context(), mcpReq); err != nil {
-			log.Error().Err(err).Str("method", req.Method).Msg("Failed to handle MCP request")
-			http.Error(w, fmt.Sprintf("Internal error: %v", err), http.StatusInternalServerError)
-			return
-		}
-
-		// Parse captured response
-		// Response may contain multiple JSON objects (response + notification)
-		// We need to parse only the first one (the actual response)
-		responseStr := string(responseData)
-		
-		// Find the first complete JSON object (ends with newline or is the only object)
-		lines := strings.Split(responseStr, "\n")
-		var firstJSONLine string
-		for _, line := range lines {
-			line = strings.TrimSpace(line)
-			if line != "" {
-				firstJSONLine = line
-				break
-			}
-		}
-		
-		if firstJSONLine == "" {
-			log.Error().Str("raw_response", responseStr).Msg("No JSON found in response")
-			http.Error(w, "Internal error: empty response", http.StatusInternalServerError)
-			return
-		}
-		
-		if err := json.Unmarshal([]byte(firstJSONLine), &mcpResponse); err != nil {
-			log.Error().Err(err).Str("raw_response", firstJSONLine).Msg("Failed to parse MCP response")
-			http.Error(w, fmt.Sprintf("Internal error: %v", err), http.StatusInternalServerError)
-			return
-		}
+	// For HTTP mode, capture response from protocol handler
+	// Create response capture that only captures the first JSON object
+	var responseData []byte
+	var responseCaptured bool
+	responseWriter := &httpResponseWriter{
+		data:     &responseData,
+		captured: &responseCaptured,
 	}
+
+	// Temporarily replace stdout to capture response
+	fmt.Fprintf(os.Stderr, "[STEP 4] Setting up response capture\n")
+	os.Stderr.Sync()
+	log.Info().Str("step", "STEP 4").Msg("Setting up response capture")
+	oldStdout := protocol.stdout
+	protocol.stdout = responseWriter
+	defer func() { protocol.stdout = oldStdout }()
+	fmt.Fprintf(os.Stderr, "[STEP 4 OK] Response capture setup complete\n")
+	os.Stderr.Sync()
+	log.Info().Str("step", "STEP 4").Msg("Response capture setup complete")
+
+	log.Info().Str("method", req.Method).Interface("id", req.ID).Msg("Handling MCP request in HTTP mode")
+
+	// Log request details before handling - FORCE OUTPUT
+	paramsPreview := ""
+	if len(req.Params) > 0 {
+		previewLen := min(len(req.Params), 200)
+		paramsPreview = string(req.Params[:previewLen])
+	}
+	fmt.Fprintf(os.Stderr, "[STEP 5] About to call protocol.handleRequest: method=%s, id=%v, params_len=%d, preview=%.100s\n", req.Method, req.ID, len(req.Params), paramsPreview)
+	os.Stderr.Sync()
+	log.Info().
+		Str("step", "STEP 5").
+		Str("method", req.Method).
+		Interface("id", req.ID).
+		Int("params_len", len(req.Params)).
+		Str("params_preview", paramsPreview).
+		Msg("About to call protocol.handleRequest")
+	log.Info().
+		Str("method", req.Method).
+		Interface("id", req.ID).
+		Str("params_preview", paramsPreview).
+		Msg("About to call protocol.handleRequest")
+
+	// Handle the request (protocol will skip notifications in HTTP mode)
+	fmt.Fprintf(os.Stderr, "[STEP 5] Calling protocol.handleRequest...\n")
+	os.Stderr.Sync()
+	log.Info().Str("step", "STEP 5").Msg("Calling protocol.handleRequest")
+	if err := protocol.handleRequest(r.Context(), mcpReq); err != nil {
+		fmt.Fprintf(os.Stderr, "[STEP 5 ERROR] handleRequest returned error: %v\n", err)
+		os.Stderr.Sync()
+		log.Error().Str("step", "STEP 5").Err(err).Msg("handleRequest returned error")
+		log.Error().Err(err).Str("method", req.Method).Msg("Failed to handle MCP request")
+		http.Error(w, fmt.Sprintf("Internal error: %v", err), http.StatusInternalServerError)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "[STEP 5 OK] protocol.handleRequest completed successfully\n")
+	os.Stderr.Sync()
+	log.Info().Str("step", "STEP 5").Msg("protocol.handleRequest completed successfully")
+
+	log.Info().Int("response_bytes", len(responseData)).Bool("captured", responseCaptured).Msg("Request handled, checking response")
+
+	// Parse captured response (only first JSON object, ignore notifications)
+	if !responseCaptured || len(responseData) == 0 {
+		fmt.Fprintf(os.Stderr, "[handleMCPRequest ERROR] No response data captured: bytes=%d, captured=%v\n", len(responseData), responseCaptured)
+		log.Error().Int("response_bytes", len(responseData)).Bool("captured", responseCaptured).Msg("No response data captured or not marked as captured")
+		// Log what was in responseData for debugging
+		if len(responseData) > 0 {
+			fmt.Fprintf(os.Stderr, "[handleMCPRequest DEBUG] Response data preview: %.200s\n", string(responseData))
+			log.Debug().Str("response_preview", string(responseData[:min(len(responseData), 200)])).Msg("Response data preview")
+		}
+		http.Error(w, "Internal error: no response", http.StatusInternalServerError)
+		return
+	}
+
+	// Remove trailing newline if present
+	jsonData := responseData
+	if len(jsonData) > 0 && jsonData[len(jsonData)-1] == '\n' {
+		jsonData = jsonData[:len(jsonData)-1]
+	}
+
+	log.Debug().Int("json_bytes", len(jsonData)).Str("preview", string(jsonData[:min(len(jsonData), 200)])).Msg("Attempting to parse JSON response")
+
+	var mcpResponse map[string]interface{}
+	if err := json.Unmarshal(jsonData, &mcpResponse); err != nil {
+		log.Error().Err(err).Int("data_len", len(jsonData)).Str("data", string(jsonData[:min(len(jsonData), 500)])).Msg("Failed to parse MCP response")
+		http.Error(w, fmt.Sprintf("Internal error: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	log.Info().Str("method", req.Method).Msg("Sending HTTP response")
 
 	// Send response
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(mcpResponse)
+	if err := json.NewEncoder(w).Encode(mcpResponse); err != nil {
+		log.Error().Err(err).Msg("Failed to encode response")
+		return
+	}
+
+	log.Info().Str("method", req.Method).Msg("HTTP response sent successfully")
 }
 
-// responseCapture captures written data
-type responseCapture struct {
-	data *[]byte
+// httpResponseWriter captures written data (only first JSON object for HTTP responses)
+type httpResponseWriter struct {
+	data     *[]byte
+	captured *bool
 }
 
-func (w *responseCapture) Write(data []byte) (int, error) {
-	*w.data = append(*w.data, data...)
+func (w *httpResponseWriter) Write(data []byte) (int, error) {
+	// Only capture first JSON object (response), ignore subsequent notifications
+	if !*w.captured {
+		log.Debug().Int("bytes_received", len(data)).Str("preview", string(data[:min(len(data), 50)])).Msg("httpResponseWriter: Received data")
+		*w.data = append(*w.data, data...)
+
+		// Check if we have a complete JSON object
+		// In MCP protocol, responses are single-line JSON objects ending with \n
+		jsonData := *w.data
+
+		// Find the end of the first JSON object (either \n or end of data)
+		// JSON objects in MCP are always on a single line
+		endIdx := len(jsonData)
+		for i := 0; i < len(jsonData); i++ {
+			if jsonData[i] == '\n' {
+				endIdx = i
+				break
+			}
+		}
+
+		log.Debug().Int("total_bytes", len(jsonData)).Int("end_idx", endIdx).Msg("httpResponseWriter: Checking for complete JSON")
+
+		// Extract the JSON object (without trailing newline)
+		if endIdx > 0 {
+			jsonObj := jsonData[:endIdx]
+
+			// Try to unmarshal to verify it's valid JSON
+			var test map[string]interface{}
+			if err := json.Unmarshal(jsonObj, &test); err == nil {
+				// Valid JSON found, mark as captured
+				log.Info().Int("bytes_captured", len(jsonObj)).Str("preview", string(jsonObj[:min(len(jsonObj), 100)])).Msg("httpResponseWriter: Captured first JSON object")
+				*w.captured = true
+				*w.data = jsonObj // Store only the JSON object without newline
+			} else {
+				// JSON might not be complete yet, wait for more data
+				log.Debug().Int("bytes_total", len(jsonData)).Err(err).Str("preview", string(jsonObj[:min(len(jsonObj), 200)])).Msg("httpResponseWriter: JSON not complete yet, waiting for more data")
+			}
+		}
+	} else {
+		log.Debug().Int("bytes_ignored", len(data)).Msg("httpResponseWriter: Ignoring subsequent data (notification)")
+	}
 	return len(data), nil
 }
 
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}

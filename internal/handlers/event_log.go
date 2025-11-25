@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/SteelMorgan/1c-log-checker/internal/clickhouse"
 	"github.com/SteelMorgan/1c-log-checker/internal/mapping"
+	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 )
@@ -26,8 +28,54 @@ func NewEventLogHandler(ch *clickhouse.Client, clusterMap *mapping.ClusterMap) *
 	}
 }
 
+// getLevelVariants returns both Russian and English variants for a level
+// International 1C versions may store levels in English, Russian versions in Russian
+// Returns slice with both variants to search for both in database
+func getLevelVariants(level string) []string {
+	switch level {
+	case "Error", "Ошибка":
+		return []string{"Ошибка", "Error"}
+	case "Warning", "Предупреждение":
+		return []string{"Предупреждение", "Warning"}
+	case "Information", "Информация":
+		return []string{"Информация", "Information"}
+	case "Note", "Примечание":
+		return []string{"Примечание", "Note"}
+	default:
+		// If unknown, return as-is (single value)
+		return []string{level}
+	}
+}
+
 // GetEventLog retrieves event log records
 func (h *EventLogHandler) GetEventLog(ctx context.Context, params EventLogParams) (string, error) {
+	// Force output to stderr
+	fmt.Fprintf(os.Stderr, "[STEP 9] GetEventLog: ENTRY - cluster=%s, infobase=%s, level=%s, mode=%s, from=%v, to=%v, limit=%d\n",
+		params.ClusterGUID, params.InfobaseGUID, params.Level, params.Mode, params.From, params.To, params.Limit)
+
+	// Log entry point - this MUST appear in logs
+	log.Info().
+		Str("step", "STEP 9").
+		Str("handler", "GetEventLog").
+		Str("cluster_guid", params.ClusterGUID).
+		Str("infobase_guid", params.InfobaseGUID).
+		Str("mode", params.Mode).
+		Str("level", params.Level).
+		Int("limit", params.Limit).
+		Time("from", params.From).
+		Time("to", params.To).
+		Msg("GetEventLog: ENTRY")
+	log.Info().
+		Str("handler", "GetEventLog").
+		Str("cluster_guid", params.ClusterGUID).
+		Str("infobase_guid", params.InfobaseGUID).
+		Str("mode", params.Mode).
+		Str("level", params.Level).
+		Int("limit", params.Limit).
+		Time("from", params.From).
+		Time("to", params.To).
+		Msg("GetEventLog handler called")
+
 	// Start span for the entire operation
 	ctx, span := startSpan(ctx, "handlers.GetEventLog",
 		attribute.String("handler", "event_log"),
@@ -86,6 +134,8 @@ func (h *EventLogHandler) GetEventLog(ctx context.Context, params EventLogParams
 
 	// Build query and scan results based on mode
 	var jsonData []byte
+	// Initialize with empty array JSON to avoid nil/empty string issues
+	jsonData = []byte("[]")
 
 	if params.Mode == "minimal" {
 		// Minimal mode query
@@ -103,8 +153,22 @@ func (h *EventLogHandler) GetEventLog(ctx context.Context, params EventLogParams
 		`
 
 		// Add level filter if specified
+		// Search for both Russian and English variants (international 1C versions may use English)
 		if params.Level != "" {
-			query += " AND level = ?"
+			levelVariants := getLevelVariants(params.Level)
+			if len(levelVariants) == 1 {
+				query += " AND level = ?"
+			} else {
+				// Build IN clause with placeholders
+				placeholders := ""
+				for i := range levelVariants {
+					if i > 0 {
+						placeholders += ", "
+					}
+					placeholders += "?"
+				}
+				query += " AND level IN (" + placeholders + ")"
+			}
 		}
 
 		query += " ORDER BY event_time DESC LIMIT ?"
@@ -117,7 +181,11 @@ func (h *EventLogHandler) GetEventLog(ctx context.Context, params EventLogParams
 			params.To,
 		}
 		if params.Level != "" {
-			args = append(args, params.Level)
+			// Add both Russian and English variants to search for both
+			levelVariants := getLevelVariants(params.Level)
+			for _, variant := range levelVariants {
+				args = append(args, variant)
+			}
 		}
 		args = append(args, params.Limit)
 
@@ -128,18 +196,40 @@ func (h *EventLogHandler) GetEventLog(ctx context.Context, params EventLogParams
 			attribute.String("db.name", "logs"),
 			attribute.String("db.sql.table", "event_log"),
 		)
-		
+
+		// Log query and args for debugging
+		log.Debug().
+			Str("query", query).
+			Interface("args", args).
+			Str("cluster_guid", params.ClusterGUID).
+			Str("infobase_guid", params.InfobaseGUID).
+			Str("level", params.Level).
+			Time("from", params.From).
+			Time("to", params.To).
+			Int("limit", params.Limit).
+			Msg("Executing event_log query (minimal mode)")
+
+		fmt.Fprintf(os.Stderr, "[STEP 9.2] Calling h.ch.Query...\n")
+		log.Info().Str("step", "STEP 9.2").Msg("Calling h.ch.Query")
 		rows, err := h.ch.Query(ctx, query, args...)
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "[STEP 9.2 ERROR] Query failed: %v\n", err)
+			log.Error().Str("step", "STEP 9.2").Err(err).Msg("Query failed")
 			endSpanWithError(querySpan, err, "query execution failed")
 			endSpanWithError(span, err, "query failed")
 			return "", fmt.Errorf("query failed: %w", err)
 		}
+		fmt.Fprintf(os.Stderr, "[STEP 9.2 OK] Query executed successfully\n")
+		log.Info().Str("step", "STEP 9.2").Msg("Query executed successfully")
 		defer rows.Close()
 
 		// Scan into typed structs
+		fmt.Fprintf(os.Stderr, "[STEP 9.3] Scanning rows...\n")
+		log.Info().Str("step", "STEP 9.3").Msg("Scanning rows")
 		var results []EventLogMinimal
+		rowCount := 0
 		for rows.Next() {
+			rowCount++
 			var record EventLogMinimal
 			if err := rows.Scan(
 				&record.EventTime,
@@ -165,6 +255,12 @@ func (h *EventLogHandler) GetEventLog(ctx context.Context, params EventLogParams
 		querySpan.SetAttributes(attribute.Int("db.rows.count", len(results)))
 		endSpanSuccess(querySpan)
 
+		// Log results count
+		log.Info().
+			Int("results_count", len(results)).
+			Str("mode", "minimal").
+			Msg("Query completed")
+
 		// Convert to JSON
 		_, jsonSpan := startSpan(ctx, "json.marshal")
 		jsonData, err = json.MarshalIndent(results, "", "  ")
@@ -175,6 +271,20 @@ func (h *EventLogHandler) GetEventLog(ctx context.Context, params EventLogParams
 		}
 		jsonSpan.SetAttributes(attribute.Int("json.size_bytes", len(jsonData)))
 		endSpanSuccess(jsonSpan)
+
+		// Log JSON result preview
+		if len(jsonData) > 0 {
+			previewLen := 200
+			if len(jsonData) < previewLen {
+				previewLen = len(jsonData)
+			}
+			log.Debug().
+				Int("json_size", len(jsonData)).
+				Str("json_preview", string(jsonData[:previewLen])).
+				Msg("JSON result generated")
+		} else {
+			log.Warn().Msg("Empty JSON result (no records found)")
+		}
 
 	} else {
 		// Full mode query
@@ -213,8 +323,22 @@ func (h *EventLogHandler) GetEventLog(ctx context.Context, params EventLogParams
 		`
 
 		// Add level filter if specified
+		// Search for both Russian and English variants (international 1C versions may use English)
 		if params.Level != "" {
-			query += " AND level = ?"
+			levelVariants := getLevelVariants(params.Level)
+			if len(levelVariants) == 1 {
+				query += " AND level = ?"
+			} else {
+				// Build IN clause with placeholders
+				placeholders := ""
+				for i := range levelVariants {
+					if i > 0 {
+						placeholders += ", "
+					}
+					placeholders += "?"
+				}
+				query += " AND level IN (" + placeholders + ")"
+			}
 		}
 
 		query += " ORDER BY event_time DESC LIMIT ?"
@@ -227,7 +351,11 @@ func (h *EventLogHandler) GetEventLog(ctx context.Context, params EventLogParams
 			params.To,
 		}
 		if params.Level != "" {
-			args = append(args, params.Level)
+			// Add both Russian and English variants to search for both
+			levelVariants := getLevelVariants(params.Level)
+			for _, variant := range levelVariants {
+				args = append(args, variant)
+			}
 		}
 		args = append(args, params.Limit)
 
@@ -238,7 +366,19 @@ func (h *EventLogHandler) GetEventLog(ctx context.Context, params EventLogParams
 			attribute.String("db.name", "logs"),
 			attribute.String("db.sql.table", "event_log"),
 		)
-		
+
+		// Log query and args for debugging
+		log.Debug().
+			Str("query", query).
+			Interface("args", args).
+			Str("cluster_guid", params.ClusterGUID).
+			Str("infobase_guid", params.InfobaseGUID).
+			Str("level", params.Level).
+			Time("from", params.From).
+			Time("to", params.To).
+			Int("limit", params.Limit).
+			Msg("Executing event_log query (full mode)")
+
 		rows, err := h.ch.Query(ctx, query, args...)
 		if err != nil {
 			endSpanWithError(querySpan, err, "query execution failed")
@@ -296,6 +436,12 @@ func (h *EventLogHandler) GetEventLog(ctx context.Context, params EventLogParams
 		querySpan.SetAttributes(attribute.Int("db.rows.count", len(results)))
 		endSpanSuccess(querySpan)
 
+		// Log results count
+		log.Info().
+			Int("results_count", len(results)).
+			Str("mode", "full").
+			Msg("Query completed")
+
 		// Convert to JSON
 		_, jsonSpan := startSpan(ctx, "json.marshal")
 		jsonData, err = json.MarshalIndent(results, "", "  ")
@@ -306,12 +452,63 @@ func (h *EventLogHandler) GetEventLog(ctx context.Context, params EventLogParams
 		}
 		jsonSpan.SetAttributes(attribute.Int("json.size_bytes", len(jsonData)))
 		endSpanSuccess(jsonSpan)
-		
+
+		// Log JSON result preview
+		if len(jsonData) > 0 {
+			previewLen := 200
+			if len(jsonData) < previewLen {
+				previewLen = len(jsonData)
+			}
+			log.Debug().
+				Int("json_size", len(jsonData)).
+				Str("json_preview", string(jsonData[:previewLen])).
+				Msg("JSON result generated")
+		} else {
+			log.Warn().Msg("Empty JSON result (no records found)")
+		}
+
 		span.SetAttributes(attribute.Int("result.records_count", len(results)))
 	}
 
 	endSpanSuccess(span)
-	return string(jsonData), nil
+
+	fmt.Fprintf(os.Stderr, "[STEP 9.5] Finalizing result...\n")
+	log.Info().Str("step", "STEP 9.5").Msg("Finalizing result")
+	// Ensure we always return valid JSON (empty array if no results)
+	if len(jsonData) == 0 || string(jsonData) == "null" {
+		fmt.Fprintf(os.Stderr, "[STEP 9.5 WARN] jsonData is empty or null, setting to []\n")
+		log.Warn().Str("step", "STEP 9.5").Str("jsonData", string(jsonData)).Msg("jsonData is empty or null, setting to []")
+		jsonData = []byte("[]")
+		log.Warn().Msg("jsonData was empty or null, returning empty array")
+	}
+
+	resultStr := string(jsonData)
+	fmt.Fprintf(os.Stderr, "[STEP 9.5 OK] Final result: len=%d, preview=%.100s\n", len(resultStr), resultStr)
+	log.Info().
+		Str("step", "STEP 9.5").
+		Int("result_len", len(resultStr)).
+		Str("result_preview", func() string {
+			if len(resultStr) > 100 {
+				return resultStr[:100]
+			}
+			return resultStr
+		}()).
+		Msg("Final result")
+	log.Info().
+		Int("json_length", len(jsonData)).
+		Str("json_preview", resultStr[:min(len(resultStr), 100)]).
+		Msg("GetEventLog returning result")
+
+	fmt.Fprintf(os.Stderr, "[STEP 9 OK] GetEventLog returning successfully\n")
+	log.Info().Str("step", "STEP 9").Msg("GetEventLog returning successfully")
+	return resultStr, nil
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // EventLogParams defines parameters for get_event_log tool
@@ -320,7 +517,7 @@ type EventLogParams struct {
 	InfobaseGUID string
 	From         time.Time
 	To           time.Time
-	Level        string // Optional filter: Error, Warning, Information, Note
+	Level        string // Optional filter: Error/Ошибка, Warning/Предупреждение, Information/Информация, Note/Примечание (searches for both Russian and English variants)
 	Mode         string // minimal or full
 	Limit        int    // Max records to return
 }
@@ -337,32 +534,31 @@ type EventLogMinimal struct {
 
 // EventLogFull represents full mode output
 type EventLogFull struct {
-	EventTime              time.Time `json:"event_time"`
-	EventDate              time.Time `json:"event_date"`
-	ClusterGUID            string    `json:"cluster_guid"`
-	ClusterName            string    `json:"cluster_name"`
-	InfobaseGUID           string    `json:"infobase_guid"`
-	InfobaseName           string    `json:"infobase_name"`
-	Level                  string    `json:"level"`
-	Event                  string    `json:"event"`
-	EventPresentation      string    `json:"event_presentation"`
-	UserName               string    `json:"user_name"`
-	UserID                 string    `json:"user_id"`
-	Computer               string    `json:"computer"`
-	Application            string    `json:"application"`
-	ApplicationPresentation string   `json:"application_presentation"`
-	SessionID              uint64    `json:"session_id"`
-	ConnectionID           uint64    `json:"connection_id"`
-	TransactionStatus      string    `json:"transaction_status"`
-	TransactionID          string    `json:"transaction_id"`
-	DataSeparation         string    `json:"data_separation"`
-	MetadataName           string    `json:"metadata_name"`
-	MetadataPresentation   string    `json:"metadata_presentation"`
-	Comment                string    `json:"comment"`
-	Data                   string    `json:"data"`
-	DataPresentation       string    `json:"data_presentation"`
-	Server                 string    `json:"server"`
-	PrimaryPort            uint16    `json:"primary_port"`
-	SecondaryPort          uint16    `json:"secondary_port"`
+	EventTime               time.Time `json:"event_time"`
+	EventDate               time.Time `json:"event_date"`
+	ClusterGUID             string    `json:"cluster_guid"`
+	ClusterName             string    `json:"cluster_name"`
+	InfobaseGUID            string    `json:"infobase_guid"`
+	InfobaseName            string    `json:"infobase_name"`
+	Level                   string    `json:"level"`
+	Event                   string    `json:"event"`
+	EventPresentation       string    `json:"event_presentation"`
+	UserName                string    `json:"user_name"`
+	UserID                  string    `json:"user_id"`
+	Computer                string    `json:"computer"`
+	Application             string    `json:"application"`
+	ApplicationPresentation string    `json:"application_presentation"`
+	SessionID               uint64    `json:"session_id"`
+	ConnectionID            uint64    `json:"connection_id"`
+	TransactionStatus       string    `json:"transaction_status"`
+	TransactionID           string    `json:"transaction_id"`
+	DataSeparation          string    `json:"data_separation"`
+	MetadataName            string    `json:"metadata_name"`
+	MetadataPresentation    string    `json:"metadata_presentation"`
+	Comment                 string    `json:"comment"`
+	Data                    string    `json:"data"`
+	DataPresentation        string    `json:"data_presentation"`
+	Server                  string    `json:"server"`
+	PrimaryPort             uint16    `json:"primary_port"`
+	SecondaryPort           uint16    `json:"secondary_port"`
 }
-
