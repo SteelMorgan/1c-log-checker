@@ -1,22 +1,28 @@
-1C Log Parser Service - License
+MIT License
 
-Copyright (c) 2025 SteelMorgan
+Copyright (c) 2025 Акимов Владимир
 
-Лицензия для некоммерческого использования
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-Проект распространяется под лицензией для некоммерческого использования. 
-Использование в коммерческих целях требует согласования с автором.
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-Для некоммерческого использования:
-- Свободное использование
-- Модификация
-- Распространение
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
-Для коммерческого использования:
-Свяжитесь с автором для обсуждения условий.
-
+---
 Благодарности
-
+---
 Логика парсинга файлов журнала регистрации (.lgp) заимствована из проекта 
 OneSTools.EventLog (https://github.com/akpaevj/OneSTools.EventLog) 
 автор: akpaevj (https://github.com/akpaevj).
@@ -28,5 +34,5 @@ OneSTools.EventLog (https://github.com/akpaevj/OneSTools.EventLog)
 - Парсинг транзакций из hex-формата
 - Обработка сложных структур данных
 
-См. подробнее: docs/changelog/lgp-parser-enhancement.md
+https://github.com/hawkxtreme - изначальная идея и стек (парсер --> Кликхаус для хранения --> Графана для визуализации)
 

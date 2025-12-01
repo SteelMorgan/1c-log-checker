@@ -116,7 +116,27 @@ if ($Mode -eq "minimal") {
 $whereClause = "WHERE cluster_guid = '$ClusterGUID' AND infobase_guid = '$InfobaseGUID' AND event_time BETWEEN '$fromClickHouse' AND '$toClickHouse'"
 
 if (-not [string]::IsNullOrEmpty($Level)) {
-    $whereClause += " AND level = '$Level'"
+    # Search for both Russian and English variants (international 1C versions may use English)
+    # Map English to both variants
+    $levelVariants = @()
+    switch ($Level) {
+        "Error" { $levelVariants = @("Ошибка", "Error") }
+        "Warning" { $levelVariants = @("Предупреждение", "Warning") }
+        "Information" { $levelVariants = @("Информация", "Information") }
+        "Note" { $levelVariants = @("Примечание", "Note") }
+        "Ошибка" { $levelVariants = @("Ошибка", "Error") }
+        "Предупреждение" { $levelVariants = @("Предупреждение", "Warning") }
+        "Информация" { $levelVariants = @("Информация", "Information") }
+        "Примечание" { $levelVariants = @("Примечание", "Note") }
+        default { $levelVariants = @($Level) }
+    }
+    
+    if ($levelVariants.Count -eq 1) {
+        $whereClause += " AND level = '$($levelVariants[0])'"
+    } else {
+        $quotedVariants = $levelVariants | ForEach-Object { "'$_'" }
+        $whereClause += " AND level IN ($($quotedVariants -join ', '))"
+    }
 }
 
 $orderClause = "ORDER BY event_time DESC LIMIT $Limit"

@@ -207,3 +207,5 @@ try {
 
 Write-Host "=== Проверка завершена ===" -ForegroundColor Cyan
 
+
+

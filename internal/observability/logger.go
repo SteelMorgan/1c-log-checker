@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/rs/zerolog"
@@ -35,17 +36,29 @@ func InitLogger(level string, logFile string) {
 
 	// If log file is specified, also write to file (JSON format for easier parsing)
 	if logFile != "" {
+		// Ensure directory exists
+		logDir := filepath.Dir(logFile)
+		if err := os.MkdirAll(logDir, 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR: Failed to create log directory %s: %v\n", logDir, err)
+		}
+		
 		file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if err != nil {
 			// If we can't open the file, log to stderr and continue with stdout only
 			// Use fmt to avoid circular dependency
-			fmt.Fprintf(os.Stderr, "Failed to open log file %s: %v, using stdout only\n", logFile, err)
+			fmt.Fprintf(os.Stderr, "ERROR: Failed to open log file %s: %v, using stdout only\n", logFile, err)
 		} else {
 			// File will receive JSON format (zerolog default when writing to raw file)
 			// Note: MultiWriter will write the same data to both, but ConsoleWriter formats it
 			// So file will contain formatted console output, not pure JSON
 			// For pure JSON in file, we'd need separate loggers, but this is simpler
 			writers = append(writers, file)
+			// Verify file was created
+			if _, statErr := os.Stat(logFile); statErr != nil {
+				fmt.Fprintf(os.Stderr, "WARNING: Log file %s was opened but stat failed: %v\n", logFile, statErr)
+			} else {
+				fmt.Fprintf(os.Stderr, "INFO: Log file %s opened successfully\n", logFile)
+			}
 		}
 	}
 

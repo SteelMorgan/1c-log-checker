@@ -2,7 +2,7 @@
 
 ## Обзор
 
-В таблице `event_log` добавлена колонка `comment_normalized`, которая содержит нормализованный текст ошибки для записей с `level = 'Error'`. Нормализация выполняется синхронно во время формирования батча, перед записью в таблицу.
+В таблице `event_log` добавлена колонка `comment_normalized`, которая содержит нормализованный текст ошибки для записей с `level IN ('Error', 'Ошибка')`. Нормализация выполняется синхронно во время формирования батча, перед записью в таблицу.
 
 ## Назначение
 
@@ -74,7 +74,7 @@ SELECT
     max(event_time) AS last_seen,
     any(comment) AS example_original_comment
 FROM logs.event_log
-WHERE level = 'Error'
+WHERE level IN ('Error', 'Ошибка')
   AND comment_normalized != ''
   AND event_time >= now() - INTERVAL 24 HOUR
 GROUP BY comment_normalized
@@ -91,7 +91,7 @@ SELECT
     uniq(user_name) AS affected_users,
     uniq(infobase_name) AS affected_databases
 FROM logs.event_log
-WHERE level = 'Error'
+WHERE level IN ('Error', 'Ошибка')
   AND comment_normalized != ''
   AND event_time >= now() - INTERVAL 7 DAY
 GROUP BY comment_normalized

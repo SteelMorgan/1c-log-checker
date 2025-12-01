@@ -33,3 +33,8 @@ if ($timezoneMap.ContainsKey($hostTimezone)) {
 # Экспортируем для использования в docker-compose
 return $env:TZ
 
+
+
+
+
+
