@@ -168,3 +168,15 @@ cd "D:\My Projects\FrameWork 1C\1c-log-checker"; git checkout before-1clogs-upda
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
