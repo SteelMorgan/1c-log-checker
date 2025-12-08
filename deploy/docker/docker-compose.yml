@@ -52,6 +52,7 @@ services:
       READ_ONLY: ${READ_ONLY:-false}
       ENABLE_DEDUPLICATION: ${ENABLE_DEDUPLICATION:-false}
       MAX_WORKERS: ${MAX_WORKERS:-4}
+      MAX_GLOBAL_WORKERS: ${MAX_GLOBAL_WORKERS:-0}
       BATCH_SIZE: ${BATCH_SIZE:-5000}
       BATCH_FLUSH_TIMEOUT: ${BATCH_FLUSH_TIMEOUT:-1000}
       LOG_LEVEL: ${LOG_LEVEL:-error}
@@ -99,6 +100,7 @@ services:
     volumes:
       - grafana_data:/var/lib/grafana
       - ../grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ../grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
       - ./init-grafana.sh:/init-grafana.sh:ro
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"

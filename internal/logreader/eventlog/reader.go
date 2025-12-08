@@ -13,6 +13,7 @@ import (
 
 	"github.com/SteelMorgan/1c-log-checker/internal/domain"
 	"github.com/SteelMorgan/1c-log-checker/internal/offset"
+	"github.com/SteelMorgan/1c-log-checker/internal/workerlimit"
 	"github.com/rs/zerolog/log"
 )
 
@@ -33,19 +34,20 @@ type EventLogOffsetStore interface {
 // Reader reads 1C Event Log files (.lgf/.lgp)
 // Uses streaming approach to avoid loading all records into memory
 type Reader struct {
-	basePath        string
-	lgfPath         string
-	lgpFiles        []string
-	clusterGUID     string
-	clusterName     string
-	infobaseGUID    string
-	infobaseName    string
-	lgfReader       *LgfReader          // For resolving user_id, computer_id, etc.
-	maxWorkers      int                 // Max parallel workers for .lgp file processing
-	metricsCallback FileMetricsCallback // Optional callback for file metrics
+	basePath         string
+	lgfPath          string
+	lgpFiles         []string
+	clusterGUID      string
+	clusterName      string
+	infobaseGUID     string
+	infobaseName     string
+	lgfReader        *LgfReader           // For resolving user_id, computer_id, etc.
+	maxWorkers       int                  // Max parallel workers for .lgp file processing
+	workerLimiter    *workerlimit.Limiter // Global limiter across all readers/tailers (optional)
+	metricsCallback  FileMetricsCallback  // Optional callback for file metrics
 	progressCallback FileProgressCallback // Optional callback for file reading progress
-	offsetStore     EventLogOffsetStore // Optional offset store for resuming file reading
-	filesProcessed  atomic.Int32        // Counter for processed files (thread-safe)
+	offsetStore      EventLogOffsetStore  // Optional offset store for resuming file reading
+	filesProcessed   atomic.Int32         // Counter for processed files (thread-safe)
 
 	// Streaming state
 	currentFileIdx int                         // Current file being read
@@ -59,16 +61,16 @@ type Reader struct {
 
 // NewReader creates a new event log reader
 func NewReader(basePath, clusterGUID, infobaseGUID, clusterName, infobaseName string, maxWorkers int) (*Reader, error) {
-	return NewReaderWithMetrics(basePath, clusterGUID, infobaseGUID, clusterName, infobaseName, maxWorkers, nil, nil)
+	return NewReaderWithMetrics(basePath, clusterGUID, infobaseGUID, clusterName, infobaseName, maxWorkers, nil, nil, nil)
 }
 
 // NewReaderWithMetrics creates a new event log reader with metrics callback
-func NewReaderWithMetrics(basePath, clusterGUID, infobaseGUID, clusterName, infobaseName string, maxWorkers int, metricsCallback FileMetricsCallback, offsetStore EventLogOffsetStore) (*Reader, error) {
-	return NewReaderWithMetricsAndProgress(basePath, clusterGUID, infobaseGUID, clusterName, infobaseName, maxWorkers, metricsCallback, nil, offsetStore)
+func NewReaderWithMetrics(basePath, clusterGUID, infobaseGUID, clusterName, infobaseName string, maxWorkers int, metricsCallback FileMetricsCallback, offsetStore EventLogOffsetStore, workerLimiter *workerlimit.Limiter) (*Reader, error) {
+	return NewReaderWithMetricsAndProgress(basePath, clusterGUID, infobaseGUID, clusterName, infobaseName, maxWorkers, metricsCallback, nil, offsetStore, workerLimiter)
 }
 
 // NewReaderWithMetricsAndProgress creates a new event log reader with metrics and progress callbacks
-func NewReaderWithMetricsAndProgress(basePath, clusterGUID, infobaseGUID, clusterName, infobaseName string, maxWorkers int, metricsCallback FileMetricsCallback, progressCallback FileProgressCallback, offsetStore EventLogOffsetStore) (*Reader, error) {
+func NewReaderWithMetricsAndProgress(basePath, clusterGUID, infobaseGUID, clusterName, infobaseName string, maxWorkers int, metricsCallback FileMetricsCallback, progressCallback FileProgressCallback, offsetStore EventLogOffsetStore, workerLimiter *workerlimit.Limiter) (*Reader, error) {
 	lgfPath := filepath.Join(basePath, "1Cv8.lgf")
 
 	// Check if .lgf file exists
@@ -84,21 +86,22 @@ func NewReaderWithMetricsAndProgress(basePath, clusterGUID, infobaseGUID, cluste
 	}
 
 	return &Reader{
-		basePath:        basePath,
-		lgfPath:         lgfPath,
-		clusterGUID:     clusterGUID,
-		clusterName:     clusterName,
-		infobaseGUID:    infobaseGUID,
-		infobaseName:    infobaseName,
-		lgfReader:       lgfReader,
-		maxWorkers:      maxWorkers,
-		metricsCallback: metricsCallback,
+		basePath:         basePath,
+		lgfPath:          lgfPath,
+		clusterGUID:      clusterGUID,
+		clusterName:      clusterName,
+		infobaseGUID:     infobaseGUID,
+		infobaseName:     infobaseName,
+		lgfReader:        lgfReader,
+		maxWorkers:       maxWorkers,
+		workerLimiter:    workerLimiter,
+		metricsCallback:  metricsCallback,
 		progressCallback: progressCallback,
-		offsetStore:     offsetStore,
-		currentFileIdx:  0,
-		recordChan:      make(chan *domain.EventLogRecord, 1000), // Buffered channel for records
-		errChan:         make(chan error, 1),
-		doneChan:        make(chan struct{}),
+		offsetStore:      offsetStore,
+		currentFileIdx:   0,
+		recordChan:       make(chan *domain.EventLogRecord, 1000), // Buffered channel for records
+		errChan:          make(chan error, 1),
+		doneChan:         make(chan struct{}),
 	}, nil
 }
 
@@ -157,14 +160,27 @@ func (r *Reader) streamFiles(ctx context.Context) {
 				default:
 				}
 
+				acquired := false
+				if r.workerLimiter != nil {
+					if err := r.workerLimiter.Acquire(ctx); err != nil {
+						log.Warn().Err(err).Msg("Worker limiter cancelled, stopping worker")
+						return
+					}
+					acquired = true
+				}
+
 				r.processFile(ctx, filePath, workerID)
+
+				if acquired {
+					r.workerLimiter.Release()
+				}
 			}
 		}(w)
 	}
 
 	// Track processed files to avoid reprocessing
 	processedFiles := make(map[string]bool)
-	
+
 	// Send initial files to workers
 	for _, filePath := range r.lgpFiles {
 		select {
@@ -180,7 +196,7 @@ func (r *Reader) streamFiles(ctx context.Context) {
 	// Periodically rescan directory for new files (every 30 seconds)
 	rescanTicker := time.NewTicker(30 * time.Second)
 	defer rescanTicker.Stop()
-	
+
 	// Wait for all initial workers to finish, then continue monitoring for new files
 	initialDone := make(chan struct{})
 	go func() {
@@ -206,10 +222,10 @@ func (r *Reader) streamFiles(ctx context.Context) {
 				log.Warn().Err(err).Str("path", r.basePath).Msg("Failed to rescan directory for new files")
 				continue
 			}
-			
+
 			// Sort files by name
 			sort.Strings(matches)
-			
+
 			// Find new files
 			newFiles := []string{}
 			for _, filePath := range matches {
@@ -218,13 +234,13 @@ func (r *Reader) streamFiles(ctx context.Context) {
 					processedFiles[filePath] = true
 				}
 			}
-			
+
 			if len(newFiles) > 0 {
 				log.Info().
 					Str("base_path", r.basePath).
 					Int("new_files", len(newFiles)).
 					Msg("Found new lgp files, adding to processing queue")
-				
+
 				// Send new files to workers
 				for _, filePath := range newFiles {
 					select {
@@ -251,7 +267,7 @@ func (r *Reader) processFile(ctx context.Context, filePath string, workerID int)
 		return
 	}
 	defer file.Close()
-	
+
 	// Increment files processed counter at the start of file processing
 	// This ensures the counter is accurate during regular metric updates
 	r.filesProcessed.Add(1)
@@ -328,18 +344,18 @@ func (r *Reader) processFile(ctx context.Context, filePath string, workerID int)
 	if stat, err := os.Stat(filePath); err == nil {
 		fileSizeBytes = uint64(stat.Size())
 	}
-	
+
 	// Track current offset for progress updates (triggered by offsetCallback only)
 	lastProgressOffset := atomic.Int64{}
 	lastProgressOffset.Store(startOffset)
-	
+
 	// Create offset callback for periodic saving
 	var offsetCallback func(int64, int64, time.Time) error
 	if r.offsetStore != nil {
 		offsetCallback = func(currentOffset int64, callbackRecordsCount int64, lastTimestamp time.Time) error {
 			// Update tracked offset
 			lastProgressOffset.Store(currentOffset)
-			
+
 			offset := &offset.EventLogOffset{
 				FilePath:      filePath,
 				OffsetBytes:   currentOffset,
@@ -349,29 +365,29 @@ func (r *Reader) processFile(ctx context.Context, filePath string, workerID int)
 			if err := r.offsetStore.SaveEventLogOffset(ctx, offset); err != nil {
 				return err
 			}
-			
+
 			// Write progress to ClickHouse if callback is provided
 			// Always update when offset is saved (every 1000 records)
 			if r.progressCallback != nil {
 				progress := &domain.FileReadingProgress{
 					Timestamp:     time.Now(),
 					ParserType:    "event_log",
-					ClusterGUID:    r.clusterGUID,
-					ClusterName:    r.clusterName,
-					InfobaseGUID:   r.infobaseGUID,
-					InfobaseName:   r.infobaseName,
-					FilePath:       filePath,
-					FileName:       filepath.Base(filePath),
-					FileSizeBytes:  fileSizeBytes,
-					OffsetBytes:    uint64(currentOffset),
-					RecordsParsed:  uint64(callbackRecordsCount + recordsParsedFromOffset),
-					LastTimestamp:  lastTimestamp,
+					ClusterGUID:   r.clusterGUID,
+					ClusterName:   r.clusterName,
+					InfobaseGUID:  r.infobaseGUID,
+					InfobaseName:  r.infobaseName,
+					FilePath:      filePath,
+					FileName:      filepath.Base(filePath),
+					FileSizeBytes: fileSizeBytes,
+					OffsetBytes:   uint64(currentOffset),
+					RecordsParsed: uint64(callbackRecordsCount + recordsParsedFromOffset),
+					LastTimestamp: lastTimestamp,
 				}
 				if err := r.progressCallback(progress); err != nil {
 					log.Warn().Err(err).Str("file", filePath).Msg("Failed to write file reading progress")
 				}
 			}
-			
+
 			// Write incremental metrics to ClickHouse if callback is provided
 			// This allows tracking metrics during file reading, not just at the end
 			if r.metricsCallback != nil {
@@ -387,14 +403,14 @@ func (r *Reader) processFile(ctx context.Context, filePath string, workerID int)
 				} else {
 					fileReadingTimeMs = 0
 				}
-				
+
 				// Use atomic recordsCount to get current value (from reader, not callback parameter)
 				currentRecordsCount := recordsCount.Load()
 				var recordsPerSecond float64
 				if elapsedTimeMs > 0 && currentRecordsCount > 0 {
 					recordsPerSecond = float64(currentRecordsCount) / (float64(elapsedTimeMs) / 1000.0)
 				}
-				
+
 				metrics := &domain.ParserMetrics{
 					Timestamp:           currentTime,
 					ParserType:          "event_log",
@@ -421,14 +437,14 @@ func (r *Reader) processFile(ctx context.Context, filePath string, workerID int)
 					log.Warn().Err(err).Str("file", filePath).Msg("Failed to write incremental parser metrics")
 				}
 			}
-			
+
 			return nil
 		}
 	}
 
 	// Progress updates are now only triggered by offsetCallback (every N records)
 	// Removed periodic time-based updates to reduce ClickHouse load
-	
+
 	// Parse streamingly - records will be sent to counting channel
 	// Pass startOffset to parser so it knows if we're resuming
 	err = parser.ParseStream(ctx, file, countChan, offsetCallback, startOffset)
@@ -477,7 +493,7 @@ func (r *Reader) processFile(ctx context.Context, filePath string, workerID int)
 					Int64("total_records", finalOffset.RecordsParsed).
 					Time("last_timestamp", lastTimestamp).
 					Msg("Saved offset for file")
-				
+
 				// Write progress to ClickHouse if callback is provided
 				if r.progressCallback != nil {
 					// Get file size if not already set
@@ -486,20 +502,20 @@ func (r *Reader) processFile(ctx context.Context, filePath string, workerID int)
 							fileSizeBytes = uint64(stat.Size())
 						}
 					}
-					
+
 					progress := &domain.FileReadingProgress{
 						Timestamp:     time.Now(),
 						ParserType:    "event_log",
-						ClusterGUID:    r.clusterGUID,
-						ClusterName:    r.clusterName,
-						InfobaseGUID:   r.infobaseGUID,
-						InfobaseName:   r.infobaseName,
-						FilePath:       filePath,
-						FileName:       filepath.Base(filePath),
-						FileSizeBytes:  fileSizeBytes,
-						OffsetBytes:    uint64(currentPos),
-						RecordsParsed:  uint64(finalCount) + uint64(recordsParsedFromOffset),
-						LastTimestamp:  lastTimestamp,
+						ClusterGUID:   r.clusterGUID,
+						ClusterName:   r.clusterName,
+						InfobaseGUID:  r.infobaseGUID,
+						InfobaseName:  r.infobaseName,
+						FilePath:      filePath,
+						FileName:      filepath.Base(filePath),
+						FileSizeBytes: fileSizeBytes,
+						OffsetBytes:   uint64(currentPos),
+						RecordsParsed: uint64(finalCount) + uint64(recordsParsedFromOffset),
+						LastTimestamp: lastTimestamp,
 					}
 					if err := r.progressCallback(progress); err != nil {
 						log.Warn().Err(err).Str("file", filePath).Msg("Failed to write file reading progress")
@@ -520,7 +536,7 @@ func (r *Reader) processFile(ctx context.Context, filePath string, workerID int)
 
 	readingDurationMs := uint64(readingDuration.Milliseconds())
 	recordParsingTimeMs := uint64(recordParsingTime.Milliseconds())
-	
+
 	// In streaming mode, reading and parsing happen simultaneously
 	// FileReadingTime = TotalTime - RecordParsingTime
 	// This represents the time spent on I/O operations (reading from disk) vs CPU (parsing records)

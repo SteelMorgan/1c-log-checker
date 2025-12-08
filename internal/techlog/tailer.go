@@ -16,6 +16,7 @@ import (
 	"github.com/SteelMorgan/1c-log-checker/internal/domain"
 	"github.com/SteelMorgan/1c-log-checker/internal/logreader"
 	"github.com/SteelMorgan/1c-log-checker/internal/offset"
+	"github.com/SteelMorgan/1c-log-checker/internal/workerlimit"
 	"github.com/rs/zerolog/log"
 )
 
@@ -50,6 +51,7 @@ type Tailer struct {
 	stopCh               chan struct{}
 	onHistoricalComplete func(filesCount int) // Callback called after historical files processing completes, receives files count
 	maxWorkers           int                  // Max parallel workers for historical file processing
+	workerLimiter        *workerlimit.Limiter // Global limiter across all tailers/readers (optional)
 	progressCallback     FileProgressCallback // Optional callback for file reading progress
 	metricsCallback      FileMetricsCallback  // Optional callback for file metrics (called after each file is processed)
 	clusterGUID          string
@@ -60,7 +62,7 @@ type Tailer struct {
 }
 
 // NewTailer creates a new tech log tailer
-func NewTailer(dirPath string, isJSON bool, offsetStore offset.OffsetStore, maxWorkers int, progressCallback FileProgressCallback, metricsCallback FileMetricsCallback, clusterGUID, infobaseGUID, clusterName, infobaseName string, searchDirs []string) *Tailer {
+func NewTailer(dirPath string, isJSON bool, offsetStore offset.OffsetStore, maxWorkers int, progressCallback FileProgressCallback, metricsCallback FileMetricsCallback, clusterGUID, infobaseGUID, clusterName, infobaseName string, searchDirs []string, workerLimiter *workerlimit.Limiter) *Tailer {
 	var techLogStore TechLogOffsetStore
 	// Try to cast to BoltDBStore which implements TechLogOffsetStore
 	if boltStore, ok := offsetStore.(*offset.BoltDBStore); ok {
@@ -78,6 +80,7 @@ func NewTailer(dirPath string, isJSON bool, offsetStore offset.OffsetStore, maxW
 		batchSize:        500, // Save offset every 500 records
 		stopCh:           make(chan struct{}),
 		maxWorkers:       maxWorkers,
+		workerLimiter:    workerLimiter,
 		progressCallback: progressCallback,
 		metricsCallback:  metricsCallback,
 		clusterGUID:      clusterGUID,
@@ -507,6 +510,15 @@ func (t *Tailer) processHistoricalFiles(ctx context.Context, handler func(*domai
 					Int("worker", workerID).
 					Msg("Worker processing file")
 
+				acquired := false
+				if t.workerLimiter != nil {
+					if err := t.workerLimiter.Acquire(ctx); err != nil {
+						log.Warn().Err(err).Msg("Worker limiter cancelled, stopping worker")
+						return
+					}
+					acquired = true
+				}
+
 				if err := t.processFile(ctx, filePath, handler); err != nil {
 					log.Warn().
 						Err(err).
@@ -514,6 +526,9 @@ func (t *Tailer) processHistoricalFiles(ctx context.Context, handler func(*domai
 						Int("worker", workerID).
 						Msg("Failed to process file")
 					errChan <- err
+				}
+				if acquired {
+					t.workerLimiter.Release()
 				}
 			}
 		}(w)

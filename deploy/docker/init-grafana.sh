@@ -53,12 +53,12 @@ else
   
   sleep 2
   
-  # Create datasource with correct uid (using official grafana plugin)
-  RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
-    -H "Content-Type: application/json" \
-    -u admin:admin \
-    -d '{"name":"ClickHouse","uid":"clickhouse","type":"grafana-clickhouse-datasource","access":"proxy","url":"http://clickhouse:9000","basicAuth":false,"isDefault":true,"jsonData":{"defaultDatabase":"logs","port":9000,"server":"clickhouse","protocol":"native","secure":false},"editable":false}' \
-    http://localhost:3000/api/datasources 2>/dev/null)
+# Create datasource with correct uid (using official grafana plugin)
+RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+  -H "Content-Type: application/json" \
+  -u admin:admin \
+  -d '{"name":"ClickHouse","uid":"clickhouse","type":"grafana-clickhouse-datasource","access":"proxy","url":"http://clickhouse:8123","basicAuth":false,"isDefault":true,"jsonData":{"defaultDatabase":"logs","port":8123,"server":"clickhouse","protocol":"http","secure":false},"editable":false}' \
+  http://localhost:3000/api/datasources 2>/dev/null)
   
   HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
   if [ "$HTTP_CODE" = "200" ]; then
