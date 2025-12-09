@@ -66,3 +66,11 @@ Thumbs.db
 *.tmp
 
 OneSTools_EventLog*
+
+# Project-local directories (debug/tests/tools)
+/parser_debug/
+/test_data/
+/tech_logs/
+/.claude/
+/.cursor/
+/.playwright-mcp/
