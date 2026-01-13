@@ -178,8 +178,9 @@ func (r *Reader) streamFiles(ctx context.Context) {
 		}(w)
 	}
 
-	// Track processed files to avoid reprocessing
-	processedFiles := make(map[string]bool)
+	// Track files and their last seen size.
+	// We must re-queue files that have grown to support "tail" behavior for the current .lgp file.
+	processedFiles := make(map[string]int64)
 
 	// Send initial files to workers
 	for _, filePath := range r.lgpFiles {
@@ -189,7 +190,12 @@ func (r *Reader) streamFiles(ctx context.Context) {
 			wg.Wait()
 			return
 		case fileChan <- filePath:
-			processedFiles[filePath] = true
+			// Best-effort stat; size=0 if stat fails.
+			var size int64
+			if stat, err := os.Stat(filePath); err == nil {
+				size = stat.Size()
+			}
+			processedFiles[filePath] = size
 		}
 	}
 
@@ -215,7 +221,7 @@ func (r *Reader) streamFiles(ctx context.Context) {
 			// Initial files processed, continue monitoring
 			initialDone = nil // Prevent re-entering this case
 		case <-rescanTicker.C:
-			// Rescan directory for new files
+			// Rescan directory for new files and grown files (tailing)
 			lgpPattern := filepath.Join(r.basePath, "*.lgp")
 			matches, err := filepath.Glob(lgpPattern)
 			if err != nil {
@@ -226,23 +232,69 @@ func (r *Reader) streamFiles(ctx context.Context) {
 			// Sort files by name
 			sort.Strings(matches)
 
-			// Find new files
-			newFiles := []string{}
+			// Find new files and grown files
+			filesToProcess := []string{}
 			for _, filePath := range matches {
-				if !processedFiles[filePath] {
-					newFiles = append(newFiles, filePath)
-					processedFiles[filePath] = true
+				stat, statErr := os.Stat(filePath)
+				if statErr != nil {
+					log.Debug().Err(statErr).Str("file", filePath).Msg("Failed to stat .lgp during rescan")
+					continue
+				}
+
+				currentSize := stat.Size()
+				lastSize, seen := processedFiles[filePath]
+
+				// New file (never seen)
+				if !seen {
+					processedFiles[filePath] = currentSize
+					filesToProcess = append(filesToProcess, filePath)
+					continue
+				}
+
+				// Existing file grew -> re-queue to read appended data
+				if currentSize > lastSize {
+					// Update last seen size immediately to avoid repeated enqueue on subsequent scans
+					processedFiles[filePath] = currentSize
+
+					log.Debug().
+						Str("file", filepath.Base(filePath)).
+						Int64("last_size", lastSize).
+						Int64("current_size", currentSize).
+						Msg("LGP file grew, scheduling re-processing to read appended records")
+
+					// If we have offsets, avoid enqueue if offset already caught up (race-safe best effort)
+					if r.offsetStore != nil {
+						if off, err := r.offsetStore.GetEventLogOffset(ctx, filePath); err == nil && off != nil {
+							if off.OffsetBytes >= currentSize {
+								continue
+							}
+						}
+					}
+
+					filesToProcess = append(filesToProcess, filePath)
+					continue
+				}
+
+				// Existing file shrank -> likely rotation/truncation, re-queue and let processFile decide from where to start
+				if currentSize < lastSize {
+					processedFiles[filePath] = currentSize
+					log.Info().
+						Str("file", filepath.Base(filePath)).
+						Int64("last_size", lastSize).
+						Int64("current_size", currentSize).
+						Msg("LGP file size decreased (rotation/truncation), scheduling re-processing")
+					filesToProcess = append(filesToProcess, filePath)
 				}
 			}
 
-			if len(newFiles) > 0 {
+			if len(filesToProcess) > 0 {
 				log.Info().
 					Str("base_path", r.basePath).
-					Int("new_files", len(newFiles)).
-					Msg("Found new lgp files, adding to processing queue")
+					Int("files", len(filesToProcess)).
+					Msg("Found new or grown lgp files, adding to processing queue")
 
-				// Send new files to workers
-				for _, filePath := range newFiles {
+				// Send files to workers
+				for _, filePath := range filesToProcess {
 					select {
 					case <-ctx.Done():
 						return
