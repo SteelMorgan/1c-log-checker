@@ -1,18 +1,33 @@
-.PHONY: help build test lint clean docker-build docker-up docker-down
+.PHONY: help build test lint clean \
+        docker-build infra-up infra-down infra-restart infra-logs infra-status \
+        mod-tidy
 
+# =============================================================================
+# help
+# =============================================================================
 help:
-	@echo "1C Log Parser Service - Makefile"
+	@echo "1C Log Parser — Makefile"
 	@echo ""
-	@echo "Available targets:"
-	@echo "  build          - Build both parser and mcp binaries"
-	@echo "  test           - Run all tests"
-	@echo "  lint           - Run linters"
-	@echo "  clean          - Clean build artifacts"
-	@echo "  docker-build   - Build Docker images"
-	@echo "  docker-up      - Start Docker Compose stack"
-	@echo "  docker-down    - Stop Docker Compose stack"
-	@echo "  mod-tidy       - Run go mod tidy"
+	@echo "  [ Сборка ]"
+	@echo "  build             - Собрать все бинарники (parser, mcp, утилиты)"
+	@echo "  clean             - Удалить артефакты сборки"
+	@echo "  mod-tidy          - go mod tidy"
+	@echo ""
+	@echo "  [ Качество кода ]"
+	@echo "  test              - Запустить тесты"
+	@echo "  lint              - Запустить линтеры"
+	@echo ""
+	@echo "  [ Docker стек ]"
+	@echo "  infra-up          - Собрать образы и поднять все контейнеры"
+	@echo "  infra-down        - Остановить все контейнеры"
+	@echo "  infra-restart     - Перезапустить стек"
+	@echo "  infra-logs        - Логи парсера (live)"
+	@echo "  infra-status      - Состояние всех контейнеров + sshfs"
+	@echo "  docker-build      - Только пересобрать Docker образы"
 
+# =============================================================================
+# Сборка
+# =============================================================================
 build:
 	@echo "Building parser..."
 	@go build -o bin/parser.exe ./cmd/parser
@@ -40,23 +55,45 @@ clean:
 	@rm -rf build/
 	@go clean
 
-docker-build:
-	@echo "Building Docker images..."
-	@cd deploy/docker && docker-compose build
-
-docker-up:
-	@echo "Starting Docker Compose stack..."
-	@cd deploy/docker && docker-compose up -d
-	@echo "Services started:"
-	@echo "  - ClickHouse: http://localhost:8123"
-	@echo "  - Grafana: http://localhost:3000"
-	@echo "  - MCP Server: http://localhost:8080"
-
-docker-down:
-	@echo "Stopping Docker Compose stack..."
-	@cd deploy/docker && docker-compose down
-
 mod-tidy:
 	@echo "Running go mod tidy..."
 	@go mod tidy
 
+# =============================================================================
+# Docker стек
+# =============================================================================
+docker-build:
+	@echo "Rebuilding Docker images..."
+	@cd deploy/docker && docker compose build
+
+infra-up:
+	@echo "[infra] Поднимаем стек (парсер + ClickHouse + Grafana + MCP)..."
+	@cd deploy/docker && docker compose up -d --build
+	@echo ""
+	@echo "  Сервисы:"
+	@echo "    ClickHouse : http://localhost:8123"
+	@echo "    Grafana    : http://localhost:3000"
+	@echo "    MCP Server : http://localhost:8080"
+	@echo ""
+	@echo "  Проверить состояние: make infra-status"
+
+infra-down:
+	@echo "[infra] Останавливаем стек..."
+	@cd deploy/docker && docker compose down
+
+infra-restart: infra-down infra-up
+
+infra-logs:
+	@cd deploy/docker && docker compose logs -f log-parser
+
+infra-status:
+	@echo "=== Docker контейнеры ==="
+	@cd deploy/docker && docker compose ps
+	@echo ""
+	@echo "=== sshfs mounts (parser) ==="
+	@docker exec 1c-log-parser sh -c "mountpoint -q /mnt/srvinfo && echo '  srvinfo: OK' && ls /mnt/srvinfo | head -5 || echo '  srvinfo: НЕ примонтировано'" 2>/dev/null || echo "  контейнер парсера не запущен"
+	@docker exec 1c-log-parser sh -c "mountpoint -q /mnt/techlog && echo '  techlog: OK' && ls /mnt/techlog | head -5 || echo '  techlog: НЕ примонтировано'" 2>/dev/null || echo "  контейнер парсера не запущен"
+
+# Алиасы для совместимости
+docker-up: infra-up
+docker-down: infra-down

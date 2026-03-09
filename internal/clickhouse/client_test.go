@@ -18,7 +18,7 @@ func TestNewClient_InvalidHost(t *testing.T) {
 
 func TestNewClientFromConfig(t *testing.T) {
 	// Test with custom config
-	_, err := NewClientFromConfig("localhost", 9000, "test", 5, 200, 10000, 2.5)
+	_, err := NewClientFromConfig("localhost", 9000, "test", "default", "", 5, 200, 10000, 2.5)
 	if err == nil {
 		// If ClickHouse is not running, this is expected
 		t.Log("ClickHouse connection test skipped (ClickHouse not available)")
@@ -32,7 +32,7 @@ func TestNewClientWithRetry(t *testing.T) {
 		MaxDelay:     1 * time.Second,
 		Multiplier:   2.0,
 	}
-	
+
 	// Test with invalid host
 	_, err := NewClientWithRetry("invalid-host", 9000, "test", cfg)
 	if err == nil {
@@ -61,7 +61,7 @@ func TestClient_Close(t *testing.T) {
 func TestClient_Query_WithoutConnection(t *testing.T) {
 	client := &Client{}
 	ctx := context.Background()
-	
+
 	_, err := client.Query(ctx, "SELECT 1")
 	if err == nil {
 		t.Error("Query() should return error without connection")
@@ -71,10 +71,9 @@ func TestClient_Query_WithoutConnection(t *testing.T) {
 func TestClient_Exec_WithoutConnection(t *testing.T) {
 	client := &Client{}
 	ctx := context.Background()
-	
+
 	err := client.Exec(ctx, "SELECT 1")
 	if err == nil {
 		t.Error("Exec() should return error without connection")
 	}
 }
-

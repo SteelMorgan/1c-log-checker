@@ -56,6 +56,8 @@ func NewServer(cfg *config.Config) (*Server, error) {
 		cfg.ClickHouseHost,
 		cfg.ClickHousePort,
 		cfg.ClickHouseDB,
+		cfg.ClickHouseUser,
+		cfg.ClickHousePass,
 		cfg.RetryMaxAttempts,
 		cfg.RetryInitialDelay,
 		cfg.RetryMaxDelay,
@@ -790,6 +792,14 @@ func (s *Server) handleMCPRequest(w http.ResponseWriter, r *http.Request) {
 
 	// Parse captured response (only first JSON object, ignore notifications)
 	if !responseCaptured || len(responseData) == 0 {
+		if req.ID == nil {
+			log.Info().
+				Str("method", req.Method).
+				Msg("Notification handled without response body")
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+
 		fmt.Fprintf(os.Stderr, "[handleMCPRequest ERROR] No response data captured: bytes=%d, captured=%v\n", len(responseData), responseCaptured)
 		log.Error().Int("response_bytes", len(responseData)).Bool("captured", responseCaptured).Msg("No response data captured or not marked as captured")
 		// Log what was in responseData for debugging

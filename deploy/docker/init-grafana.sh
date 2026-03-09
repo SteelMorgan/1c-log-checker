@@ -17,9 +17,14 @@ for i in $(seq 1 30); do
 done
 
 echo "Setting up ClickHouse datasource..."
+CH_DB="${CLICKHOUSE_DB:-logs}"
+CH_USER="${CLICKHOUSE_USER:-logchecker}"
+CH_PASSWORD="${CLICKHOUSE_PASSWORD:-logchecker}"
 # Check if datasource with correct uid exists
 CHECK=$(curl -s -u admin:admin http://localhost:3000/api/datasources/uid/clickhouse 2>/dev/null)
-if echo "$CHECK" | grep -q '"uid":"clickhouse"'; then
+if echo "$CHECK" | grep -q '"uid":"clickhouse"' && \
+   echo "$CHECK" | grep -q "\"defaultDatabase\":\"${CH_DB}\"" && \
+   (echo "$CHECK" | grep -q "\"user\":\"${CH_USER}\"" || echo "$CHECK" | grep -q "\"username\":\"${CH_USER}\""); then
   echo "ClickHouse datasource with correct uid already exists"
 else
   # Delete ALL existing ClickHouse datasources
@@ -57,7 +62,7 @@ else
 RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
   -H "Content-Type: application/json" \
   -u admin:admin \
-  -d '{"name":"ClickHouse","uid":"clickhouse","type":"grafana-clickhouse-datasource","access":"proxy","url":"http://clickhouse:8123","basicAuth":false,"isDefault":true,"jsonData":{"defaultDatabase":"logs","port":8123,"server":"clickhouse","protocol":"http","secure":false},"editable":false}' \
+  -d "{\"name\":\"ClickHouse\",\"uid\":\"clickhouse\",\"type\":\"grafana-clickhouse-datasource\",\"access\":\"proxy\",\"url\":\"http://clickhouse:8123\",\"basicAuth\":false,\"isDefault\":true,\"jsonData\":{\"defaultDatabase\":\"${CH_DB}\",\"host\":\"clickhouse\",\"port\":8123,\"protocol\":\"http\",\"username\":\"${CH_USER}\",\"secure\":false},\"secureJsonData\":{\"password\":\"${CH_PASSWORD}\"},\"editable\":false}" \
   http://localhost:3000/api/datasources 2>/dev/null)
   
   HTTP_CODE=$(echo "$RESPONSE" | tail -n1)

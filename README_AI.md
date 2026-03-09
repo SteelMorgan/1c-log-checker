@@ -450,12 +450,16 @@ Invoke-RestMethod -Uri "http://localhost:8080/tools/get_techlog_config" -Method 
         "MCP_MODE": "stdio",
         "CLICKHOUSE_HOST": "clickhouse",
         "CLICKHOUSE_PORT": "9000",
-        "CLICKHOUSE_DB": "logs"
+        "CLICKHOUSE_DB": "logs",
+        "CLICKHOUSE_USER": "logchecker",
+        "CLICKHOUSE_PASSWORD": "logchecker"
       }
     }
   }
 }
 ```
+
+Важно: в текущем Docker-окружении удалённые подключения под пользователем `default` могут завершаться `AUTHENTICATION_FAILED`. Для контейнерных подключений используйте сервисного пользователя `logchecker`.
 
 ### 2. Доступные инструменты MCP
 
@@ -889,4 +893,3 @@ Docker Compose Stack
 ---
 
 **Последнее обновление:** 2025-01-XX
-

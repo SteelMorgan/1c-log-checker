@@ -27,8 +27,8 @@ WORKDIR /app
 # Copy binary from builder
 COPY --from=builder /build/mcp .
 
-# Create configs directory
-RUN mkdir -p /app/configs
+# Create directories
+RUN mkdir -p /app/configs /app/logs
 
 # Run as non-root user
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup

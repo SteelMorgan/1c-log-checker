@@ -179,6 +179,12 @@ ConfLocation=D:\ProjectCatalog\configs\techlog\
 
 #### 3.2. Подключить МСР
 
+Если MCP-клиент запускается в отдельном Docker-контейнере, ему нужен сетевой доступ к контейнеру `1c-log-mcp`.
+
+**Специальный случай:** если используется проект https://github.com/SteelMorgan/1c-ai-sandbox-client-server, контейнер `1c-log-mcp` должен быть подключён к сети `infra`, чтобы локальный AI-контейнер мог обращаться к MCP по имени контейнера, например `http://1c-log-mcp:8080`.
+
+Во всех остальных случаях управление сетевой связностью между Docker-контейнерами остаётся на вас и вашем AI-агенте: обеспечьте маршрут и DNS/hostname между контейнером с AI и контейнером `1c-log-mcp` удобным для вашей инфраструктуры способом.
+
 ```json
 # HTTP
 {
@@ -190,6 +196,8 @@ ConfLocation=D:\ProjectCatalog\configs\techlog\
   }
 }
 ```
+
+Примечание: если клиент работает не на хосте, а внутри Docker-сети, вместо `localhost` может понадобиться имя контейнера или иной адрес, доступный из сети этого клиента.
 
 ```json
 # STDIO
@@ -205,12 +213,16 @@ ConfLocation=D:\ProjectCatalog\configs\techlog\
         "MCP_MODE": "stdio",
         "CLICKHOUSE_HOST": "clickhouse",
         "CLICKHOUSE_PORT": "9000",
-        "CLICKHOUSE_DB": "logs"
+        "CLICKHOUSE_DB": "logs",
+        "CLICKHOUSE_USER": "logchecker",
+        "CLICKHOUSE_PASSWORD": "logchecker"
       }
     }
   }
 }
 ```
+
+Важно: в текущем Docker-окружении удалённые подключения под пользователем `default` могут завершаться `AUTHENTICATION_FAILED`. Для контейнерных подключений используйте сервисного пользователя `logchecker`.
 
 
 ### 4. Настройка GUID-маппинга
@@ -238,14 +250,36 @@ infobases:
 Как получить GUIDы — см. [docs/guides/get-guids.md](docs/guides/get-guids.md) или любой другой удобный для вас способ (в гугле много вариантов)
 Альтернативный вариант - посмотреть данные в таблице logs.file_reading_progress после запуска сервиса парсера
 
-### 4. Запуск
+### 4. Подготовка внешних ресурсов Docker
 
-```powershell
-cd deploy/docker
-docker-compose up -d
+`docker-compose.yml` использует внешние (external) ресурсы, которые нужно создать **до первого запуска**:
+
+| Ресурс | Тип | Откуда берётся | Зачем |
+|--------|-----|----------------|-------|
+| `infra` | network | Общая сеть для связи между Docker-стеками | MCP-сервер доступен другим контейнерам по имени `1c-log-mcp` |
+| `agent-work-sandbox-1c` | volume | Devcontainer (создаётся автоматически) | SSH-ключ для sshfs в devcontainer-окружении |
+
+```bash
+# Создать сеть (если не существует):
+docker network create infra
+
+# Volume agent-work-sandbox-1c нужен ТОЛЬКО в devcontainer-окружении.
+# На обычном хосте (Windows/Linux) удалите секцию work_data из docker-compose.yml
+# и укажите путь к SSH-ключу напрямую через ONEC_SSH_KEY в .env.
 ```
 
-### 5. Проверка
+> **Примечание:** если вы запускаете проект НЕ из devcontainer, уберите volume `work_data` из `docker-compose.yml` и замените mount SSH-ключа на прямой bind mount файла.
+
+### 5. Запуск
+
+```bash
+cd deploy/docker
+docker compose up -d
+# или через Makefile:
+make infra-up
+```
+
+### 6. Проверка
 
 - **ClickHouse:** http://localhost:8123/play
 - **Grafana:** http://localhost:3000 (без авторизации, если хотите - можно настроить, попросите агента)
@@ -264,6 +298,8 @@ docker-compose up -d
 | `CLICKHOUSE_HOST` | Хост ClickHouse | `localhost` |
 | `CLICKHOUSE_PORT` | Порт ClickHouse | `9000` |
 | `CLICKHOUSE_DB` | База данных ClickHouse | `logs` |
+| `CLICKHOUSE_USER` | Пользователь ClickHouse | `logchecker` |
+| `CLICKHOUSE_PASSWORD` | Пароль ClickHouse | `logchecker` |
 | `LOG_RETENTION_DAYS` | Срок хранения логов (дни) | `30` |
 | `READ_ONLY` | Технический режим (только чтение, без записи в CH) | `false` |
 | `MCP_PORT` | Порт MCP-сервера | `8080` |
@@ -506,8 +542,6 @@ docker-compose up -d
 ## Лицензия
 
 Проект распространяется под лицензией MIT, но если вы используете его в коммерческих целях и он помогает вам генерировать доход - можете отправить Донат. Автору будет приятно, что его труд оценили, а проект получит ресурсы для развития.
-
-
 
 
 

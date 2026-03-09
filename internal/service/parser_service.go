@@ -83,8 +83,8 @@ func NewParserService(cfg *config.Config) (*ParserService, error) {
 			Addr: []string{fmt.Sprintf("%s:%d", cfg.ClickHouseHost, cfg.ClickHousePort)},
 			Auth: clickhouse.Auth{
 				Database: cfg.ClickHouseDB,
-				Username: "default",
-				Password: "",
+				Username: cfg.ClickHouseUser,
+				Password: cfg.ClickHousePass,
 			},
 		})
 		if err != nil {
@@ -586,7 +586,7 @@ func (s *ParserService) createDirectReader(location logreader.LogLocation, clust
 		}
 	}
 
-	return eventlog.NewReaderWithMetricsAndProgress(location.BasePath, location.ClusterGUID, location.InfobaseGUID, clusterName, infobaseName, s.cfg.MaxWorkers, metricsCallback, progressCallback, eventLogOffsetStore, s.workerLimiter)
+	return eventlog.NewReaderWithMetricsAndProgress(location.BasePath, location.ClusterGUID, location.InfobaseGUID, clusterName, infobaseName, s.cfg.LogDirs, s.cfg.MaxWorkers, metricsCallback, progressCallback, eventLogOffsetStore, s.workerLimiter)
 }
 
 // scanTechLogDir scans a root tech log directory for cluster_guid/infobase_guid subdirectories

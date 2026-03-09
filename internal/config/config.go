@@ -13,6 +13,8 @@ type Config struct {
 	ClickHouseHost string
 	ClickHousePort int
 	ClickHouseDB   string
+	ClickHouseUser string
+	ClickHousePass string
 
 	// Log directories
 	LogDirs     []string // Paths to event log directories (журнал регистрации)
@@ -56,6 +58,8 @@ func Load() (*Config, error) {
 		ClickHouseHost: getEnv("CLICKHOUSE_HOST", "localhost"),
 		ClickHousePort: getEnvInt("CLICKHOUSE_PORT", 9000),
 		ClickHouseDB:   getEnv("CLICKHOUSE_DB", "logs"),
+		ClickHouseUser: getEnv("CLICKHOUSE_USER", "default"),
+		ClickHousePass: getEnv("CLICKHOUSE_PASSWORD", ""),
 
 		LogDirs:     parsePathList(getEnv("LOG_DIRS", "")),
 		TechLogDirs: parsePathList(getEnv("TECHLOG_DIRS", "")),

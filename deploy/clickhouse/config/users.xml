@@ -2,10 +2,12 @@
 <clickhouse>
     <users>
         <default>
-            <!-- No password for default user -->
-            <password></password>
+            <!-- default user: only local and Docker bridge access (no remote) -->
+            <no_password/>
             <networks>
-                <ip>::/0</ip>
+                <ip>127.0.0.1</ip>
+                <ip>::1</ip>
+                <ip>172.16.0.0/12</ip>
             </networks>
             <profile>default</profile>
             <quota>default</quota>
@@ -13,4 +15,3 @@
         </default>
     </users>
 </clickhouse>
-
