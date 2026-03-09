@@ -13,35 +13,40 @@ import (
 
 // Client wraps ClickHouse connection
 type Client struct {
-	conn      clickhouse.Conn
-	retryCfg  retry.Config
+	conn     clickhouse.Conn
+	retryCfg retry.Config
 }
 
 // NewClient creates a new ClickHouse client with default retry config
 func NewClient(host string, port int, database string) (*Client, error) {
-	return NewClientWithRetry(host, port, database, retry.DefaultConfig())
+	return NewClientWithAuth(host, port, database, "default", "", retry.DefaultConfig())
 }
 
 // NewClientFromConfig creates a new ClickHouse client with retry config from application config
-func NewClientFromConfig(host string, port int, database string, maxAttempts int, initialDelayMs int, maxDelayMs int, multiplier float64) (*Client, error) {
+func NewClientFromConfig(host string, port int, database string, user string, password string, maxAttempts int, initialDelayMs int, maxDelayMs int, multiplier float64) (*Client, error) {
 	retryCfg := retry.Config{
-		MaxAttempts:  maxAttempts,
-		InitialDelay: time.Duration(initialDelayMs) * time.Millisecond,
-		MaxDelay:     time.Duration(maxDelayMs) * time.Millisecond,
-		Multiplier:   multiplier,
+		MaxAttempts:     maxAttempts,
+		InitialDelay:    time.Duration(initialDelayMs) * time.Millisecond,
+		MaxDelay:        time.Duration(maxDelayMs) * time.Millisecond,
+		Multiplier:      multiplier,
 		RetryableErrors: retry.DefaultConfig().RetryableErrors, // Use default retryable errors
 	}
-	return NewClientWithRetry(host, port, database, retryCfg)
+	return NewClientWithAuth(host, port, database, user, password, retryCfg)
 }
 
 // NewClientWithRetry creates a new ClickHouse client with custom retry configuration
 func NewClientWithRetry(host string, port int, database string, retryCfg retry.Config) (*Client, error) {
+	return NewClientWithAuth(host, port, database, "default", "", retryCfg)
+}
+
+// NewClientWithAuth creates a new ClickHouse client with explicit credentials.
+func NewClientWithAuth(host string, port int, database string, user string, password string, retryCfg retry.Config) (*Client, error) {
 	conn, err := clickhouse.Open(&clickhouse.Options{
 		Addr: []string{fmt.Sprintf("%s:%d", host, port)},
 		Auth: clickhouse.Auth{
 			Database: database,
-			Username: "default",
-			Password: "",
+			Username: user,
+			Password: password,
 		},
 		Settings: clickhouse.Settings{
 			"max_execution_time": 60,
@@ -53,7 +58,7 @@ func NewClientWithRetry(host string, port int, database string, retryCfg retry.C
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to clickhouse: %w", err)
 	}
-	
+
 	// Test connection with retry
 	ctx := context.Background()
 	if err := retry.Do(ctx, retryCfg, func() error {
@@ -61,13 +66,14 @@ func NewClientWithRetry(host string, port int, database string, retryCfg retry.C
 	}); err != nil {
 		return nil, fmt.Errorf("failed to ping clickhouse: %w", err)
 	}
-	
+
 	log.Info().
 		Str("host", host).
 		Int("port", port).
 		Str("database", database).
+		Str("user", user).
 		Msg("Connected to ClickHouse")
-	
+
 	return &Client{
 		conn:     conn,
 		retryCfg: retryCfg,
@@ -98,4 +104,3 @@ func (c *Client) Exec(ctx context.Context, query string, args ...interface{}) er
 		return c.conn.Exec(ctx, query, args...)
 	})
 }
-

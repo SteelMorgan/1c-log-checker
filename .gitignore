@@ -38,6 +38,7 @@ Thumbs.db
 .secrets/
 *.key
 *.pem
+.ssh/
 
 # Docker volumes data
 /deploy/docker/volumes/

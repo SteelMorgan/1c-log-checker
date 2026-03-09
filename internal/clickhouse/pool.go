@@ -14,22 +14,29 @@ import (
 
 // Pool manages a pool of ClickHouse connections
 type Pool struct {
-	host       string
-	port       int
-	database   string
-	retryCfg   retry.Config
-	maxConns   int
-	minConns   int
-	
-	mu         sync.RWMutex
-	conns      []clickhouse.Conn
-	available  []bool
-	active     int
-	created    int
+	host     string
+	port     int
+	database string
+	user     string
+	password string
+	retryCfg retry.Config
+	maxConns int
+	minConns int
+
+	mu        sync.RWMutex
+	conns     []clickhouse.Conn
+	available []bool
+	active    int
+	created   int
 }
 
 // NewPool creates a new connection pool
 func NewPool(host string, port int, database string, retryCfg retry.Config, maxConns, minConns int) (*Pool, error) {
+	return NewPoolWithAuth(host, port, database, "default", "", retryCfg, maxConns, minConns)
+}
+
+// NewPoolWithAuth creates a new connection pool with explicit credentials.
+func NewPoolWithAuth(host string, port int, database string, user string, password string, retryCfg retry.Config, maxConns, minConns int) (*Pool, error) {
 	if maxConns < 1 {
 		maxConns = 10 // Default
 	}
@@ -44,6 +51,8 @@ func NewPool(host string, port int, database string, retryCfg retry.Config, maxC
 		host:      host,
 		port:      port,
 		database:  database,
+		user:      user,
+		password:  password,
 		retryCfg:  retryCfg,
 		maxConns:  maxConns,
 		minConns:  minConns,
@@ -79,8 +88,8 @@ func (p *Pool) createConnection() (clickhouse.Conn, error) {
 		Addr: []string{fmt.Sprintf("%s:%d", p.host, p.port)},
 		Auth: clickhouse.Auth{
 			Database: p.database,
-			Username: "default",
-			Password: "",
+			Username: p.user,
+			Password: p.password,
 		},
 		Settings: clickhouse.Settings{
 			"max_execution_time": 60,
@@ -196,11 +205,11 @@ func (p *Pool) Stats() map[string]interface{} {
 	defer p.mu.RUnlock()
 
 	return map[string]interface{}{
-		"total_connections": p.created,
-		"active_connections": p.active,
+		"total_connections":     p.created,
+		"active_connections":    p.active,
 		"available_connections": p.created - p.active,
-		"max_connections": p.maxConns,
-		"min_connections": p.minConns,
+		"max_connections":       p.maxConns,
+		"min_connections":       p.minConns,
 	}
 }
 
@@ -232,4 +241,3 @@ func (p *Pool) Exec(ctx context.Context, query string, args ...interface{}) erro
 		return conn.Exec(ctx, query, args...)
 	})
 }
-

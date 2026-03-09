@@ -9,10 +9,12 @@ datasources:
     basicAuth: false
     isDefault: true
     jsonData:
-      defaultDatabase: logs
-      server: clickhouse
+      defaultDatabase: ${CLICKHOUSE_DB}
+      host: clickhouse
       port: 8123
       protocol: http
+      username: ${CLICKHOUSE_USER}
       secure: false
+    secureJsonData:
+      password: ${CLICKHOUSE_PASSWORD}
     editable: false
-

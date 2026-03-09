@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -105,4 +104,3 @@ func TestParserServiceContextCancellation(t *testing.T) {
 		t.Errorf("Stop failed: %v", err)
 	}
 }
-

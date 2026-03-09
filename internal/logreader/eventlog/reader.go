@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/SteelMorgan/1c-log-checker/internal/domain"
+	"github.com/SteelMorgan/1c-log-checker/internal/logreader"
 	"github.com/SteelMorgan/1c-log-checker/internal/offset"
 	"github.com/SteelMorgan/1c-log-checker/internal/workerlimit"
 	"github.com/rs/zerolog/log"
@@ -41,6 +42,7 @@ type Reader struct {
 	clusterName      string
 	infobaseGUID     string
 	infobaseName     string
+	searchDirs       []string
 	lgfReader        *LgfReader           // For resolving user_id, computer_id, etc.
 	maxWorkers       int                  // Max parallel workers for .lgp file processing
 	workerLimiter    *workerlimit.Limiter // Global limiter across all readers/tailers (optional)
@@ -61,16 +63,16 @@ type Reader struct {
 
 // NewReader creates a new event log reader
 func NewReader(basePath, clusterGUID, infobaseGUID, clusterName, infobaseName string, maxWorkers int) (*Reader, error) {
-	return NewReaderWithMetrics(basePath, clusterGUID, infobaseGUID, clusterName, infobaseName, maxWorkers, nil, nil, nil)
+	return NewReaderWithMetrics(basePath, clusterGUID, infobaseGUID, clusterName, infobaseName, nil, maxWorkers, nil, nil, nil)
 }
 
 // NewReaderWithMetrics creates a new event log reader with metrics callback
-func NewReaderWithMetrics(basePath, clusterGUID, infobaseGUID, clusterName, infobaseName string, maxWorkers int, metricsCallback FileMetricsCallback, offsetStore EventLogOffsetStore, workerLimiter *workerlimit.Limiter) (*Reader, error) {
-	return NewReaderWithMetricsAndProgress(basePath, clusterGUID, infobaseGUID, clusterName, infobaseName, maxWorkers, metricsCallback, nil, offsetStore, workerLimiter)
+func NewReaderWithMetrics(basePath, clusterGUID, infobaseGUID, clusterName, infobaseName string, searchDirs []string, maxWorkers int, metricsCallback FileMetricsCallback, offsetStore EventLogOffsetStore, workerLimiter *workerlimit.Limiter) (*Reader, error) {
+	return NewReaderWithMetricsAndProgress(basePath, clusterGUID, infobaseGUID, clusterName, infobaseName, searchDirs, maxWorkers, metricsCallback, nil, offsetStore, workerLimiter)
 }
 
 // NewReaderWithMetricsAndProgress creates a new event log reader with metrics and progress callbacks
-func NewReaderWithMetricsAndProgress(basePath, clusterGUID, infobaseGUID, clusterName, infobaseName string, maxWorkers int, metricsCallback FileMetricsCallback, progressCallback FileProgressCallback, offsetStore EventLogOffsetStore, workerLimiter *workerlimit.Limiter) (*Reader, error) {
+func NewReaderWithMetricsAndProgress(basePath, clusterGUID, infobaseGUID, clusterName, infobaseName string, searchDirs []string, maxWorkers int, metricsCallback FileMetricsCallback, progressCallback FileProgressCallback, offsetStore EventLogOffsetStore, workerLimiter *workerlimit.Limiter) (*Reader, error) {
 	lgfPath := filepath.Join(basePath, "1Cv8.lgf")
 
 	// Check if .lgf file exists
@@ -92,6 +94,7 @@ func NewReaderWithMetricsAndProgress(basePath, clusterGUID, infobaseGUID, cluste
 		clusterName:      clusterName,
 		infobaseGUID:     infobaseGUID,
 		infobaseName:     infobaseName,
+		searchDirs:       searchDirs,
 		lgfReader:        lgfReader,
 		maxWorkers:       maxWorkers,
 		workerLimiter:    workerLimiter,
@@ -103,6 +106,31 @@ func NewReaderWithMetricsAndProgress(basePath, clusterGUID, infobaseGUID, cluste
 		errChan:          make(chan error, 1),
 		doneChan:         make(chan struct{}),
 	}, nil
+}
+
+func (r *Reader) resolveNames() (clusterName, infobaseName string) {
+	if r.clusterGUID == "" || r.infobaseGUID == "" || len(r.searchDirs) == 0 {
+		return r.clusterName, r.infobaseName
+	}
+
+	clusterName, infobaseName, err := logreader.GetClusterAndInfobaseNames(r.clusterGUID, r.infobaseGUID, r.searchDirs)
+	if err != nil {
+		log.Debug().
+			Err(err).
+			Str("cluster_guid", r.clusterGUID).
+			Str("infobase_guid", r.infobaseGUID).
+			Msg("Failed to resolve cluster and infobase names for event_log")
+		return r.clusterName, r.infobaseName
+	}
+
+	if clusterName != "" {
+		r.clusterName = clusterName
+	}
+	if infobaseName != "" {
+		r.infobaseName = infobaseName
+	}
+
+	return r.clusterName, r.infobaseName
 }
 
 // Open opens the event log and prepares for reading
@@ -361,12 +389,15 @@ func (r *Reader) processFile(ctx context.Context, filePath string, workerID int)
 		}
 	}
 
+	// Resolve cluster/infobase names once for the entire file
+	resolvedClusterName, resolvedInfobaseName := r.resolveNames()
+
 	// Measure file reading time (opening file)
 	fileOpenStartTime := time.Now()
 
 	// Parse file using streaming mode (avoids loading all records into memory)
 	parsingStartTime := time.Now()
-	parser := NewLgpParser(r.clusterGUID, r.infobaseGUID, r.clusterName, r.infobaseName, r.lgfReader)
+	parser := NewLgpParser(r.clusterGUID, r.infobaseGUID, resolvedClusterName, resolvedInfobaseName, r.lgfReader)
 
 	// Count records as they are streamed (using atomic counter to avoid race conditions)
 	var recordsCount atomic.Uint64
@@ -382,6 +413,9 @@ func (r *Reader) processFile(ctx context.Context, filePath string, workerID int)
 		for record := range countChan {
 			recordsCount.Add(1)
 			lastRecordTimestamp.Store(record.EventTime) // Store timestamp for final offset
+			record.ClusterName = resolvedClusterName
+			record.InfobaseName = resolvedInfobaseName
+
 			select {
 			case <-ctx.Done():
 				return
@@ -421,13 +455,14 @@ func (r *Reader) processFile(ctx context.Context, filePath string, workerID int)
 			// Write progress to ClickHouse if callback is provided
 			// Always update when offset is saved (every 1000 records)
 			if r.progressCallback != nil {
+				progressClusterName, progressInfobaseName := resolvedClusterName, resolvedInfobaseName
 				progress := &domain.FileReadingProgress{
 					Timestamp:     time.Now(),
 					ParserType:    "event_log",
 					ClusterGUID:   r.clusterGUID,
-					ClusterName:   r.clusterName,
+					ClusterName:   progressClusterName,
 					InfobaseGUID:  r.infobaseGUID,
-					InfobaseName:  r.infobaseName,
+					InfobaseName:  progressInfobaseName,
 					FilePath:      filePath,
 					FileName:      filepath.Base(filePath),
 					FileSizeBytes: fileSizeBytes,
@@ -459,20 +494,21 @@ func (r *Reader) processFile(ctx context.Context, filePath string, workerID int)
 				// Use atomic recordsCount to get current value (from reader, not callback parameter)
 				currentRecordsCount := recordsCount.Load()
 				var recordsPerSecond float64
-				if elapsedTimeMs > 0 && currentRecordsCount > 0 {
-					recordsPerSecond = float64(currentRecordsCount) / (float64(elapsedTimeMs) / 1000.0)
-				}
+					if elapsedTimeMs > 0 && currentRecordsCount > 0 {
+						recordsPerSecond = float64(currentRecordsCount) / (float64(elapsedTimeMs) / 1000.0)
+					}
 
-				metrics := &domain.ParserMetrics{
-					Timestamp:           currentTime,
-					ParserType:          "event_log",
-					ClusterGUID:         r.clusterGUID,
-					ClusterName:         r.clusterName,
-					InfobaseGUID:        r.infobaseGUID,
-					InfobaseName:        r.infobaseName,
-					FilePath:            filePath,
-					FileName:            filepath.Base(filePath),
-					FilesProcessed:      uint32(r.filesProcessed.Load()),
+					metricsClusterName, metricsInfobaseName := resolvedClusterName, resolvedInfobaseName
+					metrics := &domain.ParserMetrics{
+						Timestamp:           currentTime,
+						ParserType:          "event_log",
+						ClusterGUID:         r.clusterGUID,
+						ClusterName:         metricsClusterName,
+						InfobaseGUID:        r.infobaseGUID,
+						InfobaseName:        metricsInfobaseName,
+						FilePath:            filePath,
+						FileName:            filepath.Base(filePath),
+						FilesProcessed:      uint32(r.filesProcessed.Load()),
 					RecordsParsed:       currentRecordsCount + uint64(recordsParsedFromOffset),
 					ParsingTimeMs:       elapsedTimeMs,
 					RecordsPerSecond:    recordsPerSecond,
@@ -555,13 +591,14 @@ func (r *Reader) processFile(ctx context.Context, filePath string, workerID int)
 						}
 					}
 
+					progressClusterName, progressInfobaseName := resolvedClusterName, resolvedInfobaseName
 					progress := &domain.FileReadingProgress{
 						Timestamp:     time.Now(),
 						ParserType:    "event_log",
 						ClusterGUID:   r.clusterGUID,
-						ClusterName:   r.clusterName,
+						ClusterName:   progressClusterName,
 						InfobaseGUID:  r.infobaseGUID,
-						InfobaseName:  r.infobaseName,
+						InfobaseName:  progressInfobaseName,
 						FilePath:      filePath,
 						FileName:      filepath.Base(filePath),
 						FileSizeBytes: fileSizeBytes,
@@ -621,13 +658,14 @@ func (r *Reader) processFile(ctx context.Context, filePath string, workerID int)
 
 	// Call metrics callback if provided (final metrics after file completion)
 	if r.metricsCallback != nil {
+		metricsClusterName, metricsInfobaseName := resolvedClusterName, resolvedInfobaseName
 		metrics := &domain.ParserMetrics{
 			Timestamp:           time.Now(),
 			ParserType:          "event_log",
 			ClusterGUID:         r.clusterGUID,
-			ClusterName:         r.clusterName,
+			ClusterName:         metricsClusterName,
 			InfobaseGUID:        r.infobaseGUID,
-			InfobaseName:        r.infobaseName,
+			InfobaseName:        metricsInfobaseName,
 			FilePath:            filePath,
 			FileName:            filepath.Base(filePath),
 			FilesProcessed:      uint32(r.filesProcessed.Load()),

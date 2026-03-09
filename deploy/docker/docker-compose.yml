@@ -11,7 +11,10 @@ services:
       - ../clickhouse/config/users.xml:/etc/clickhouse-server/users.d/users.xml:ro
     environment:
       CLICKHOUSE_DB: ${CLICKHOUSE_DB:-logs}
+      CLICKHOUSE_SERVICE_USER: ${CLICKHOUSE_USER:-logchecker}
+      CLICKHOUSE_SERVICE_PASSWORD: ${CLICKHOUSE_PASSWORD}
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 0
+      CLICKHOUSE_SKIP_USER_SETUP: 1
       TZ: UTC  # ClickHouse must use UTC to store times correctly
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -37,17 +40,33 @@ services:
     depends_on:
       clickhouse:
         condition: service_healthy
+    cap_add:
+      - SYS_ADMIN
+    devices:
+      - /dev/fuse
+    security_opt:
+      - apparmor:unconfined
     volumes:
-      - ${LOG_DIRS:-C:\Program Files\1cv8\srvinfo}:/mnt/logs:ro
-      - ${TECHLOG_DIRS:-C:\ProgramData\1C\1Cv8\logs}:/mnt/techlog:ro
       - parser_offsets:/app/offsets
       - ../../logs:/app/logs
+      - work_data:/mnt/work_data:ro
     environment:
-      LOG_DIRS: /mnt/logs
+      # sshfs mount settings
+      ONEC_VM_IP: ${ONEC_VM_IP:-192.168.250.2}
+      ONEC_VM_USER: ${ONEC_VM_USER:-sandbox}
+      ONEC_SRVINFO_REMOTE: ${ONEC_SRVINFO_REMOTE:-/opt/onec-export/srvinfo}
+      ONEC_TECHLOG_REMOTE: ${ONEC_TECHLOG_REMOTE:-/opt/onec-export/logs}
+      ONEC_SSH_KEY_PATH: ${ONEC_SSH_KEY_PATH}
+      # parser reads from sshfs mount points
+      LOG_DIRS: /mnt/srvinfo
       TECHLOG_DIRS: /mnt/techlog
+      # clickhouse
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: ${CLICKHOUSE_PORT:-9000}
       CLICKHOUSE_DB: ${CLICKHOUSE_DB:-logs}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-logchecker}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      # parser settings
       LOG_RETENTION_DAYS: ${LOG_RETENTION_DAYS:-30}
       READ_ONLY: ${READ_ONLY:-false}
       ENABLE_DEDUPLICATION: ${ENABLE_DEDUPLICATION:-false}
@@ -59,6 +78,7 @@ services:
       TZ: ${TZ:-UTC}
     networks:
       - internal
+    user: "0:0"
     restart: unless-stopped
 
   mcp-server:
@@ -74,19 +94,22 @@ services:
     volumes:
       - ../../configs:/app/configs:ro
       - ${TECHLOG_CONFIG_DIR:-../../configs/techlog}:/app/techlog-config:rw
-      - ../../logs:/app/logs
+      - mcp_logs:/app/logs
     environment:
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: ${CLICKHOUSE_PORT:-9000}
       CLICKHOUSE_DB: ${CLICKHOUSE_DB:-logs}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-logchecker}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
       MCP_PORT: ${MCP_PORT:-8080}
       LOG_LEVEL: ${LOG_LEVEL:-error}
       TECHLOG_CONFIG_DIR: /app/techlog-config
-      TECHLOG_DIRS: ${TECHLOG_DIRS:-C:\ProgramData\1C\1Cv8\logs}
+      TECHLOG_DIRS: ${TECHLOG_DIRS:-/var/log/techlog}
       TZ: ${TZ:-UTC}
     networks:
       - internal
       - monitoring
+      - infra
     restart: unless-stopped
 
   grafana:
@@ -101,18 +124,21 @@ services:
       - grafana_data:/var/lib/grafana
       - ../grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
       - ../grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
-      - ./init-grafana.sh:/init-grafana.sh:ro
+      - ./init-grafana.sh:/docker-init/init-grafana.sh:ro
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
       GF_INSTALL_PLUGINS: grafana-clickhouse-datasource
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-logs}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-logchecker}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
       TZ: ${TZ:-UTC}
     networks:
       - internal
       - monitoring
     restart: unless-stopped
-    entrypoint: ["/bin/sh", "-c", "/init-grafana.sh & exec /run.sh"]
+    entrypoint: ["/bin/sh", "-c", "sh /docker-init/init-grafana.sh & exec /run.sh"]
     healthcheck:
       test: ["CMD-SHELL", "wget --spider -q http://localhost:3000/api/health || exit 1"]
       interval: 10s
@@ -127,10 +153,16 @@ volumes:
     driver: local
   parser_offsets:
     driver: local
+  mcp_logs:
+    driver: local
+  work_data:
+    external: true
+    name: agent-work-sandbox-1c
 
 networks:
   internal:
     driver: bridge
   monitoring:
     driver: bridge
-
+  infra:
+    external: true
