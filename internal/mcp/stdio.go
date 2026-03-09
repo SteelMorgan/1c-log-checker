@@ -376,28 +376,21 @@ func (m *MCPProtocol) handleGetEventLogTool(ctx context.Context, args map[string
 		params.Level = "Error"
 	}
 
-	// Set default time range to last 10 minutes if not specified
-	now := time.Now()
+	// Parse time range — if not specified, leave zero (handler will skip time filter)
 	if v, ok := args["from"].(string); ok && v != "" {
 		if t, err := parseTime(v); err == nil {
 			params.From = t
 		} else {
-			params.From = now.Add(-10 * time.Minute)
-			log.Warn().Err(err).Str("input", v).Msg("Failed to parse 'from', using default")
+			log.Warn().Err(err).Str("input", v).Msg("Failed to parse 'from', ignoring")
 		}
-	} else {
-		params.From = now.Add(-10 * time.Minute)
 	}
 
 	if v, ok := args["to"].(string); ok && v != "" {
 		if t, err := parseTime(v); err == nil {
 			params.To = t
 		} else {
-			params.To = now
-			log.Warn().Err(err).Str("input", v).Msg("Failed to parse 'to', using default")
+			log.Warn().Err(err).Str("input", v).Msg("Failed to parse 'to', ignoring")
 		}
-	} else {
-		params.To = now
 	}
 
 	// Parse limit - can be int or float64 from JSON
