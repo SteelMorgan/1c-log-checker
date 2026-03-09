@@ -104,10 +104,13 @@ func (h *EventLogHandler) GetEventLog(ctx context.Context, params EventLogParams
 		return "", err
 	}
 
-	// Validate time range
-	if err := ValidateTimeRange(params.From.Format(time.RFC3339), params.To.Format(time.RFC3339)); err != nil {
-		endSpanWithError(span, err, "validation failed")
-		return "", err
+	// Validate time range only when both bounds are specified
+	hasTimeRange := !params.From.IsZero() && !params.To.IsZero()
+	if hasTimeRange {
+		if err := ValidateTimeRange(params.From.Format(time.RFC3339), params.To.Format(time.RFC3339)); err != nil {
+			endSpanWithError(span, err, "validation failed")
+			return "", err
+		}
 	}
 
 	// Validate mode
@@ -121,9 +124,14 @@ func (h *EventLogHandler) GetEventLog(ctx context.Context, params EventLogParams
 		params.Mode = "minimal"
 	}
 
-	// Set default limit if not specified
-	if params.Limit <= 0 {
-		params.Limit = 1000
+	// Track whether limit was explicitly provided
+	limitWasDefault := params.Limit <= 0
+	if limitWasDefault {
+		if hasTimeRange {
+			params.Limit = 1000
+		} else {
+			params.Limit = 100
+		}
 	}
 
 	// Validate limit
@@ -149,8 +157,19 @@ func (h *EventLogHandler) GetEventLog(ctx context.Context, params EventLogParams
 				metadata_presentation
 			FROM logs.event_log
 			WHERE cluster_guid = ? AND infobase_guid = ?
-			  AND event_time BETWEEN ? AND ?
 		`
+
+		// Build args
+		args := []interface{}{
+			params.ClusterGUID,
+			params.InfobaseGUID,
+		}
+
+		// Add time range filter only when specified
+		if hasTimeRange {
+			query += " AND event_time BETWEEN ? AND ?"
+			args = append(args, params.From, params.To)
+		}
 
 		// Add level filter if specified
 		// Search for both Russian and English variants (international 1C versions may use English)
@@ -159,7 +178,6 @@ func (h *EventLogHandler) GetEventLog(ctx context.Context, params EventLogParams
 			if len(levelVariants) == 1 {
 				query += " AND level = ?"
 			} else {
-				// Build IN clause with placeholders
 				placeholders := ""
 				for i := range levelVariants {
 					if i > 0 {
@@ -169,24 +187,12 @@ func (h *EventLogHandler) GetEventLog(ctx context.Context, params EventLogParams
 				}
 				query += " AND level IN (" + placeholders + ")"
 			}
-		}
-
-		query += " ORDER BY event_time DESC LIMIT ?"
-
-		// Build args
-		args := []interface{}{
-			params.ClusterGUID,
-			params.InfobaseGUID,
-			params.From,
-			params.To,
-		}
-		if params.Level != "" {
-			// Add both Russian and English variants to search for both
-			levelVariants := getLevelVariants(params.Level)
-			for _, variant := range levelVariants {
+			for _, variant := range getLevelVariants(params.Level) {
 				args = append(args, variant)
 			}
 		}
+
+		query += " ORDER BY event_time DESC LIMIT ?"
 		args = append(args, params.Limit)
 
 		// Execute query with span
@@ -319,17 +325,26 @@ func (h *EventLogHandler) GetEventLog(ctx context.Context, params EventLogParams
 				secondary_port
 			FROM logs.event_log
 			WHERE cluster_guid = ? AND infobase_guid = ?
-			  AND event_time BETWEEN ? AND ?
 		`
 
+		// Build args
+		args := []interface{}{
+			params.ClusterGUID,
+			params.InfobaseGUID,
+		}
+
+		// Add time range filter only when specified
+		if hasTimeRange {
+			query += " AND event_time BETWEEN ? AND ?"
+			args = append(args, params.From, params.To)
+		}
+
 		// Add level filter if specified
-		// Search for both Russian and English variants (international 1C versions may use English)
 		if params.Level != "" {
 			levelVariants := getLevelVariants(params.Level)
 			if len(levelVariants) == 1 {
 				query += " AND level = ?"
 			} else {
-				// Build IN clause with placeholders
 				placeholders := ""
 				for i := range levelVariants {
 					if i > 0 {
@@ -339,24 +354,12 @@ func (h *EventLogHandler) GetEventLog(ctx context.Context, params EventLogParams
 				}
 				query += " AND level IN (" + placeholders + ")"
 			}
-		}
-
-		query += " ORDER BY event_time DESC LIMIT ?"
-
-		// Build args
-		args := []interface{}{
-			params.ClusterGUID,
-			params.InfobaseGUID,
-			params.From,
-			params.To,
-		}
-		if params.Level != "" {
-			// Add both Russian and English variants to search for both
-			levelVariants := getLevelVariants(params.Level)
-			for _, variant := range levelVariants {
+			for _, variant := range getLevelVariants(params.Level) {
 				args = append(args, variant)
 			}
 		}
+
+		query += " ORDER BY event_time DESC LIMIT ?"
 		args = append(args, params.Limit)
 
 		// Execute query with span
@@ -501,6 +504,12 @@ func (h *EventLogHandler) GetEventLog(ctx context.Context, params EventLogParams
 
 	fmt.Fprintf(os.Stderr, "[STEP 9 OK] GetEventLog returning successfully\n")
 	log.Info().Str("step", "STEP 9").Msg("GetEventLog returning successfully")
+
+	// Add warning when limit was not explicitly provided
+	if limitWasDefault && !hasTimeRange {
+		return fmt.Sprintf("⚠️ Параметр limit не был передан — по умолчанию выдано до %d записей по запрошенному фильтру.\n\n%s", params.Limit, resultStr), nil
+	}
+
 	return resultStr, nil
 }
 
