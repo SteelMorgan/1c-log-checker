@@ -1,0 +1,66 @@
+<?xml version="1.0"?>
+<!--
+    System log tables: TTL 14 days.
+    ClickHouse recreates tables with these settings on restart.
+-->
+<clickhouse>
+    <query_log>
+        <database>system</database>
+        <table>query_log</table>
+        <ttl>event_date + INTERVAL 14 DAY</ttl>
+    </query_log>
+
+    <query_views_log>
+        <database>system</database>
+        <table>query_views_log</table>
+        <ttl>event_date + INTERVAL 14 DAY</ttl>
+    </query_views_log>
+
+    <query_metric_log>
+        <database>system</database>
+        <table>query_metric_log</table>
+        <ttl>event_date + INTERVAL 14 DAY</ttl>
+    </query_metric_log>
+
+    <trace_log>
+        <database>system</database>
+        <table>trace_log</table>
+        <ttl>event_date + INTERVAL 14 DAY</ttl>
+    </trace_log>
+
+    <text_log>
+        <database>system</database>
+        <table>text_log</table>
+        <ttl>event_date + INTERVAL 14 DAY</ttl>
+    </text_log>
+
+    <part_log>
+        <database>system</database>
+        <table>part_log</table>
+        <ttl>event_date + INTERVAL 14 DAY</ttl>
+    </part_log>
+
+    <metric_log>
+        <database>system</database>
+        <table>metric_log</table>
+        <ttl>event_date + INTERVAL 14 DAY</ttl>
+    </metric_log>
+
+    <asynchronous_metric_log>
+        <database>system</database>
+        <table>asynchronous_metric_log</table>
+        <ttl>event_date + INTERVAL 14 DAY</ttl>
+    </asynchronous_metric_log>
+
+    <error_log>
+        <database>system</database>
+        <table>error_log</table>
+        <ttl>event_date + INTERVAL 14 DAY</ttl>
+    </error_log>
+
+    <processors_profile_log>
+        <database>system</database>
+        <table>processors_profile_log</table>
+        <ttl>event_date + INTERVAL 14 DAY</ttl>
+    </processors_profile_log>
+</clickhouse>
