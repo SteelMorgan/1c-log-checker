@@ -10,6 +10,7 @@ services:
       - ../clickhouse/init:/docker-entrypoint-initdb.d:ro
       - ../clickhouse/config/users.xml:/etc/clickhouse-server/users.d/users.xml:ro
       - ../clickhouse/config/system_logs_ttl.xml:/etc/clickhouse-server/config.d/system_logs_ttl.xml:ro
+      - ../clickhouse/config/listen.xml:/etc/clickhouse-server/config.d/listen.xml:ro
     environment:
       CLICKHOUSE_DB: ${CLICKHOUSE_DB:-logs}
       CLICKHOUSE_SERVICE_USER: ${CLICKHOUSE_USER:-logchecker}
