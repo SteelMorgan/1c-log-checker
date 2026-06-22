@@ -20,22 +20,25 @@ RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o mcp ./cmd/mcp
 # Runtime stage
 FROM alpine:latest
 
-RUN apk --no-cache add ca-certificates tzdata
+RUN apk --no-cache add ca-certificates tzdata sshfs openssh-client fuse su-exec \
+    && echo "user_allow_other" >> /etc/fuse.conf
 
 WORKDIR /app
 
 # Copy binary from builder
 COPY --from=builder /build/mcp .
 
+# Copy entrypoint script (strip Windows CRLF if present)
+COPY deploy/docker/entrypoint-mcp.sh /app/entrypoint.sh
+RUN sed -i 's/\r//' /app/entrypoint.sh && chmod +x /app/entrypoint.sh
+
 # Create directories
-RUN mkdir -p /app/configs /app/logs
+RUN mkdir -p /app/configs /app/logs /app/techlog-config /mnt/work_data
 
 # Run as non-root user
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 RUN chown -R appuser:appgroup /app
-USER appuser
 
 EXPOSE 8080
 
-ENTRYPOINT ["./mcp"]
-
+ENTRYPOINT ["/app/entrypoint.sh"]
