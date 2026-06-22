@@ -35,7 +35,8 @@ func (h *DisableTechLogHandler) DisableTechLog(ctx context.Context, configPath s
 	
 	// Create minimal config that disables logging
 	config := LogConfig{
-		XMLName: xml.Name{Local: "config", Space: "http://v8.1c.ru/v8/tech-log"},
+		XMLName: xml.Name{Local: "config"},
+		XMLNS:   "http://v8.1c.ru/v8/tech-log",
 		Dump:    DumpConfig{Create: false},
 		Logs:    []LogElement{}, // No log elements = disabled
 	}
@@ -57,4 +58,3 @@ func (h *DisableTechLogHandler) DisableTechLog(ctx context.Context, configPath s
 	
 	return nil
 }
-

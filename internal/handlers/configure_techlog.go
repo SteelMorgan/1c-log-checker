@@ -40,7 +40,8 @@ func (h *ConfigureTechLogHandler) ConfigureTechLog(ctx context.Context, params C
 	}
 	
 	config := LogConfig{
-		XMLName: xml.Name{Local: "config", Space: "http://v8.1c.ru/v8/tech-log"},
+		XMLName: xml.Name{Local: "config"},
+		XMLNS:   "http://v8.1c.ru/v8/tech-log",
 		Dump:    DumpConfig{Create: false},
 		Logs:    []LogElement{},
 	}
@@ -156,4 +157,3 @@ type PropertyCondition struct {
 type PropertyElement struct {
 	Name string `xml:"name,attr"`
 }
-

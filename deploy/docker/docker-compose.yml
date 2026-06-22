@@ -93,11 +93,22 @@ services:
         condition: service_healthy
     ports:
       - "${MCP_PORT:-8080}:8080"
+    cap_add:
+      - SYS_ADMIN
+    devices:
+      - /dev/fuse
+    security_opt:
+      - apparmor:unconfined
     volumes:
       - ../../configs:/app/configs:ro
       - ${TECHLOG_CONFIG_DIR:-../../configs/techlog}:/app/techlog-config:rw
       - mcp_logs:/app/logs
+      - work_data:/mnt/work_data:ro
     environment:
+      ONEC_VM_IP: ${ONEC_VM_IP:-192.168.250.2}
+      ONEC_VM_USER: ${ONEC_VM_USER:-sandbox}
+      ONEC_TECHLOG_CONFIG_REMOTE: ${ONEC_TECHLOG_CONFIG_REMOTE:-/opt/1cv8/conf}
+      ONEC_SSH_KEY_PATH: ${ONEC_SSH_KEY_PATH}
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: ${CLICKHOUSE_PORT:-9000}
       CLICKHOUSE_DB: ${CLICKHOUSE_DB:-logs}
@@ -108,6 +119,7 @@ services:
       TECHLOG_CONFIG_DIR: /app/techlog-config
       TECHLOG_DIRS: ${TECHLOG_DIRS:-/var/log/techlog}
       TZ: ${TZ:-UTC}
+    user: "0:0"
     networks:
       - internal
       - monitoring
