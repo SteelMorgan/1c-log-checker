@@ -4,6 +4,14 @@
     ClickHouse recreates tables with these settings on restart.
 -->
 <clickhouse>
+    <logger>
+        <level>information</level>
+    </logger>
+
+    <!-- Disable server-wide memory profiler samples in system.trace_log.
+         The default 4 MiB step creates very large trace_log tables on memory-constrained nodes. -->
+    <total_memory_profiler_step>0</total_memory_profiler_step>
+
     <query_log>
         <database>system</database>
         <table>query_log</table>
@@ -32,6 +40,7 @@
         <database>system</database>
         <table>text_log</table>
         <ttl>event_date + INTERVAL 14 DAY</ttl>
+        <level>warning</level>
     </text_log>
 
     <part_log>
@@ -44,12 +53,14 @@
         <database>system</database>
         <table>metric_log</table>
         <ttl>event_date + INTERVAL 14 DAY</ttl>
+        <collect_interval_milliseconds>60000</collect_interval_milliseconds>
     </metric_log>
 
     <asynchronous_metric_log>
         <database>system</database>
         <table>asynchronous_metric_log</table>
         <ttl>event_date + INTERVAL 14 DAY</ttl>
+        <collect_interval_milliseconds>60000</collect_interval_milliseconds>
     </asynchronous_metric_log>
 
     <error_log>
