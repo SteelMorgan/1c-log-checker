@@ -202,8 +202,10 @@ func (w *ClickHouseWriter) Flush(ctx context.Context) error {
 	return w.flushTechLog(ctx)
 }
 
-// WriteParserMetrics writes parser performance metrics to ClickHouse
-// CRITICAL: Deletes old record for the same file before inserting new one to ensure only one record per file
+// WriteParserMetrics writes parser performance metrics to ClickHouse.
+// logs.parser_metrics is a ReplacingMergeTree(updated_at), so new versions are
+// inserted without DELETE mutations; readers that need an immediate latest row
+// should use FINAL/argMax-based views.
 func (w *ClickHouseWriter) WriteParserMetrics(ctx context.Context, metrics *domain.ParserMetrics) error {
 	// Enrich metrics with accumulated values from writer if not already set
 	// This allows metrics from reader (which doesn't have deduplication/writing times) to be enriched
@@ -382,28 +384,6 @@ func (w *ClickHouseWriter) WriteParserMetrics(ctx context.Context, metrics *doma
 			Msg("FileReadingTimeMs + RecordParsingTimeMs > ParsingTimeMs (expected in streaming mode - times overlap)")
 	}
 	
-	// CRITICAL: Delete old record for this file before inserting new one
-	// ReplacingMergeTree replaces records only during merge (async), so we need to delete explicitly
-	// to ensure only one record per file exists at any time
-	// ORDER BY is (parser_type, cluster_guid, infobase_guid, file_path)
-	deleteQuery := fmt.Sprintf(
-		"ALTER TABLE logs.parser_metrics DELETE WHERE parser_type = '%s' AND cluster_guid = '%s' AND infobase_guid = '%s' AND file_path = '%s'",
-		metrics.ParserType,
-		metrics.ClusterGUID,
-		metrics.InfobaseGUID,
-		strings.ReplaceAll(metrics.FilePath, "'", "''"), // Escape single quotes
-	)
-	
-	// Execute DELETE asynchronously (ClickHouse processes ALTER DELETE in background)
-	// We don't wait for completion - new INSERT will work correctly
-	if err := w.conn.Exec(ctx, deleteQuery); err != nil {
-		// Log warning but continue - INSERT will still work, ReplacingMergeTree will handle duplicates on merge
-		log.Warn().
-			Err(err).
-			Str("file_path", metrics.FilePath).
-			Msg("Failed to delete old parser_metrics record, continuing with INSERT")
-	}
-	
 	batch, err := w.conn.PrepareBatch(ctx, `INSERT INTO logs.parser_metrics (
 		timestamp, parser_type, cluster_guid, cluster_name, infobase_guid, infobase_name,
 		file_path, file_name, files_processed, records_parsed, parsing_time_ms, records_per_second,
@@ -457,35 +437,14 @@ func (w *ClickHouseWriter) WriteParserMetrics(ctx context.Context, metrics *doma
 	return nil
 }
 
-// WriteFileReadingProgress writes file reading progress to ClickHouse
-// Mirrors offsets from BoltDB but with additional metadata for monitoring
-// CRITICAL: Deletes old record for the same file before inserting new one to ensure only one record per file
+// WriteFileReadingProgress writes file reading progress to ClickHouse.
+// The table is ReplacingMergeTree(updated_at); INSERT-only updates avoid
+// background DELETE mutations that are much more expensive than versioned rows.
 func (w *ClickHouseWriter) WriteFileReadingProgress(ctx context.Context, progress *domain.FileReadingProgress) error {
 	if progress == nil {
 		return fmt.Errorf("progress cannot be nil")
 	}
-	
-	// CRITICAL: Delete old record for this file before inserting new one
-	// ReplacingMergeTree replaces records only during merge (async), so we need to delete explicitly
-	// to ensure only one record per file exists at any time
-	deleteQuery := fmt.Sprintf(
-		"ALTER TABLE logs.file_reading_progress DELETE WHERE parser_type = '%s' AND cluster_guid = '%s' AND infobase_guid = '%s' AND file_path = '%s'",
-		progress.ParserType,
-		progress.ClusterGUID,
-		progress.InfobaseGUID,
-		strings.ReplaceAll(progress.FilePath, "'", "''"), // Escape single quotes
-	)
-	
-	// Execute DELETE asynchronously (ClickHouse processes ALTER DELETE in background)
-	// We don't wait for completion - new INSERT will work correctly
-	if err := w.conn.Exec(ctx, deleteQuery); err != nil {
-		// Log warning but continue - INSERT will still work, ReplacingMergeTree will handle duplicates on merge
-		log.Warn().
-			Err(err).
-			Str("file_path", progress.FilePath).
-			Msg("Failed to delete old file_reading_progress record, continuing with INSERT")
-	}
-	
+
 	// Calculate progress percentage
 	var progressPercent float64
 	if progress.FileSizeBytes > 0 {
@@ -1652,4 +1611,3 @@ func mapToArrays(m map[string]string) ([]string, []string) {
 	
 	return keys, values
 }
-

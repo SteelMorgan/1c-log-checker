@@ -435,7 +435,7 @@ CREATE TABLE IF NOT EXISTS logs.parser_metrics (
     record_parsing_time_ms UInt64 DEFAULT 0,
     deduplication_time_ms UInt64 DEFAULT 0,
     writing_time_ms UInt64 DEFAULT 0,
-    updated_at DateTime DEFAULT now()
+    updated_at DateTime64(6) DEFAULT now64(6)
 ) ENGINE = ReplacingMergeTree(updated_at)
 PARTITION BY toYYYYMM(updated_at)
 ORDER BY (parser_type, cluster_guid, infobase_guid, file_path)
@@ -448,6 +448,26 @@ CREATE INDEX IF NOT EXISTS idx_parser_metrics_file_path ON logs.parser_metrics (
 
 -- 5) Вью с вычисляемыми метриками
 CREATE OR REPLACE VIEW logs.parser_metrics_extended AS
+WITH latest AS (
+    SELECT
+        parser_type,
+        cluster_guid,
+        infobase_guid,
+        file_path,
+        argMax(cluster_name, updated_at) AS cluster_name,
+        argMax(infobase_name, updated_at) AS infobase_name,
+        argMax(start_time, updated_at) AS start_time,
+        argMax(end_time, updated_at) AS end_time,
+        argMax(parsing_time_ms, updated_at) AS parsing_time_ms,
+        argMax(records_parsed, updated_at) AS records_parsed,
+        argMax(records_per_second, updated_at) AS records_per_second,
+        argMax(file_reading_time_ms, updated_at) AS file_reading_time_ms,
+        argMax(record_parsing_time_ms, updated_at) AS record_parsing_time_ms,
+        argMax(deduplication_time_ms, updated_at) AS deduplication_time_ms,
+        argMax(writing_time_ms, updated_at) AS writing_time_ms
+    FROM logs.parser_metrics
+    GROUP BY parser_type, cluster_guid, infobase_guid, file_path
+)
 SELECT
     parser_type,
     cluster_name,
@@ -470,8 +490,7 @@ SELECT
          THEN round((deduplication_time_ms * 100.0 / (parsing_time_ms + deduplication_time_ms + writing_time_ms)), 2) ELSE 0 END AS deduplication_percentage,
     CASE WHEN (parsing_time_ms + deduplication_time_ms + writing_time_ms) > 0
          THEN round((writing_time_ms * 100.0 / (parsing_time_ms + deduplication_time_ms + writing_time_ms)), 2) ELSE 0 END AS writing_percentage
-FROM logs.parser_metrics
-FINAL;
+FROM latest;
 
 -- 6) Прогресс чтения файлов (file_reading_progress) — финальная версия
 CREATE TABLE IF NOT EXISTS logs.file_reading_progress (
@@ -495,5 +514,41 @@ ORDER BY (parser_type, cluster_guid, infobase_guid, file_path)
 TTL updated_at + INTERVAL 90 DAY
 SETTINGS index_granularity = 8192;
 
-
-
+-- 7) Логическое latest-представление прогресса.
+-- INSERT-only writer оставляет физические версии до фонового merge, поэтому
+-- мониторинговые запросы должны читать эту view, а не сырую таблицу.
+CREATE OR REPLACE VIEW logs.file_reading_progress_latest AS
+SELECT
+    timestamp,
+    parser_type,
+    cluster_guid,
+    cluster_name,
+    infobase_guid,
+    infobase_name,
+    file_path,
+    file_name,
+    file_size_bytes,
+    offset_bytes,
+    records_parsed,
+    last_timestamp,
+    progress_percent,
+    latest_updated_at AS updated_at
+FROM (
+SELECT
+    argMax(timestamp, updated_at) AS timestamp,
+    parser_type,
+    cluster_guid,
+    argMax(cluster_name, updated_at) AS cluster_name,
+    infobase_guid,
+    argMax(infobase_name, updated_at) AS infobase_name,
+    file_path,
+    argMax(file_name, updated_at) AS file_name,
+    argMax(file_size_bytes, updated_at) AS file_size_bytes,
+    argMax(offset_bytes, updated_at) AS offset_bytes,
+    argMax(records_parsed, updated_at) AS records_parsed,
+    argMax(last_timestamp, updated_at) AS last_timestamp,
+    argMax(progress_percent, updated_at) AS progress_percent,
+    max(updated_at) AS latest_updated_at
+FROM logs.file_reading_progress
+GROUP BY parser_type, cluster_guid, infobase_guid, file_path
+);

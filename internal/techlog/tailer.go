@@ -34,6 +34,16 @@ type FileProgressCallback func(progress *domain.FileReadingProgress) error
 // Metrics are written to parser_metrics table for each file separately
 type FileMetricsCallback func(metrics *domain.ParserMetrics) error
 
+type namesCacheKey struct {
+	clusterGUID  string
+	infobaseGUID string
+}
+
+type cachedNames struct {
+	clusterName  string
+	infobaseName string
+}
+
 // Tailer tails tech log files with support for rotation and compression
 type Tailer struct {
 	dirPath              string
@@ -59,6 +69,8 @@ type Tailer struct {
 	clusterName          string
 	infobaseName         string
 	searchDirs           []string // Directories to search for 1CV8Clst.lst to get cluster/infobase names
+	namesCache           map[namesCacheKey]cachedNames
+	namesCacheMu         sync.RWMutex
 }
 
 // NewTailer creates a new tech log tailer
@@ -88,6 +100,7 @@ func NewTailer(dirPath string, isJSON bool, offsetStore offset.OffsetStore, maxW
 		clusterName:      clusterName,
 		infobaseName:     infobaseName,
 		searchDirs:       searchDirs,
+		namesCache:       make(map[namesCacheKey]cachedNames),
 	}
 }
 
@@ -100,12 +113,18 @@ func (t *Tailer) SetHistoricalCompleteCallback(callback func(filesCount int)) {
 // getNamesByGUID gets cluster and infobase names by GUIDs
 // Returns names from 1CV8Clst.lst if found, otherwise returns fallback names from struct
 func (t *Tailer) getNamesByGUID(clusterGUID, infobaseGUID string) (clusterName, infobaseName string) {
+	key := namesCacheKey{clusterGUID: clusterGUID, infobaseGUID: infobaseGUID}
+	if names, ok := t.getCachedNames(key); ok {
+		return names.clusterName, names.infobaseName
+	}
+
 	// If GUIDs are empty, use fallback from struct
 	if clusterGUID == "" || infobaseGUID == "" {
 		log.Info().
 			Str("cluster_guid", clusterGUID).
 			Str("infobase_guid", infobaseGUID).
 			Msg("GUIDs are empty, using fallback names from struct")
+		t.cacheNames(key, t.clusterName, t.infobaseName)
 		return t.clusterName, t.infobaseName
 	}
 
@@ -115,6 +134,7 @@ func (t *Tailer) getNamesByGUID(clusterGUID, infobaseGUID string) (clusterName, 
 			Str("cluster_guid", clusterGUID).
 			Str("infobase_guid", infobaseGUID).
 			Msg("searchDirs is empty, using fallback names from struct")
+		t.cacheNames(key, t.clusterName, t.infobaseName)
 		return t.clusterName, t.infobaseName
 	}
 
@@ -126,6 +146,7 @@ func (t *Tailer) getNamesByGUID(clusterGUID, infobaseGUID string) (clusterName, 
 			Str("infobase_guid", infobaseGUID).
 			Strs("search_dirs", t.searchDirs).
 			Msg("Failed to get names from 1CV8Clst.lst, using fallback")
+		t.cacheNames(key, t.clusterName, t.infobaseName)
 		return t.clusterName, t.infobaseName
 	}
 
@@ -137,6 +158,7 @@ func (t *Tailer) getNamesByGUID(clusterGUID, infobaseGUID string) (clusterName, 
 			Str("infobase_guid", infobaseGUID).
 			Str("infobase_name", foundInfobaseName).
 			Msg("Found names from 1CV8Clst.lst")
+		t.cacheNames(key, foundClusterName, foundInfobaseName)
 		return foundClusterName, foundInfobaseName
 	}
 
@@ -149,6 +171,7 @@ func (t *Tailer) getNamesByGUID(clusterGUID, infobaseGUID string) (clusterName, 
 			Str("fallback_cluster_name", t.clusterName).
 			Str("fallback_infobase_name", t.infobaseName).
 			Msg("Names not found in 1CV8Clst.lst, using fallback names from struct")
+		t.cacheNames(key, t.clusterName, t.infobaseName)
 		return t.clusterName, t.infobaseName
 	}
 
@@ -158,7 +181,24 @@ func (t *Tailer) getNamesByGUID(clusterGUID, infobaseGUID string) (clusterName, 
 		Str("infobase_guid", infobaseGUID).
 		Strs("search_dirs", t.searchDirs).
 		Msg("Names not found in 1CV8Clst.lst and fallback is also empty - cluster and infobase names will be empty")
+	t.cacheNames(key, "", "")
 	return "", ""
+}
+
+func (t *Tailer) getCachedNames(key namesCacheKey) (cachedNames, bool) {
+	t.namesCacheMu.RLock()
+	defer t.namesCacheMu.RUnlock()
+	names, ok := t.namesCache[key]
+	return names, ok
+}
+
+func (t *Tailer) cacheNames(key namesCacheKey, clusterName, infobaseName string) {
+	t.namesCacheMu.Lock()
+	defer t.namesCacheMu.Unlock()
+	t.namesCache[key] = cachedNames{
+		clusterName:  clusterName,
+		infobaseName: infobaseName,
+	}
 }
 
 // Start starts tailing the tech log directory
@@ -315,9 +355,12 @@ func (t *Tailer) processNewRecords(ctx context.Context, handler func(*domain.Tec
 	}
 
 	// Read new lines
+	linesReadThisCycle := int64(0)
+	lastRecordTimestamp := time.Now()
 	for t.scanner.Scan() {
 		line := t.scanner.Text()
 		t.lineCount++
+		linesReadThisCycle++
 
 		// Parse the line
 		var record *domain.TechLogRecord
@@ -336,6 +379,7 @@ func (t *Tailer) processNewRecords(ctx context.Context, handler func(*domain.Tec
 				Msg("Failed to parse tech log line, skipping")
 			continue
 		}
+		lastRecordTimestamp = record.Timestamp
 
 		// Add cluster_guid, infobase_guid and their names to record
 		record.ClusterGUID = clusterGUID
@@ -363,9 +407,10 @@ func (t *Tailer) processNewRecords(ctx context.Context, handler func(*domain.Tec
 		return fmt.Errorf("scanner error: %w", err)
 	}
 
-	// Save offset at the end of processing cycle
-	if t.offsetStore != nil {
-		if err := t.saveOffset(ctx, latestFile, currentSize, time.Now()); err != nil {
+	// Save offset at the end only when the reader consumed new data. Without this
+	// guard live tailing wrote the same offset/progress every 500ms while idle.
+	if t.offsetStore != nil && linesReadThisCycle > 0 {
+		if err := t.saveOffset(ctx, latestFile, currentSize, lastRecordTimestamp); err != nil {
 			log.Warn().Err(err).Msg("Failed to save offset at end of cycle")
 		}
 	}
@@ -926,6 +971,10 @@ func (t *Tailer) saveOffset(ctx context.Context, filePath string, fileSize int64
 	currentPos, err := t.currentFile.Seek(0, io.SeekCurrent)
 	if err != nil {
 		return fmt.Errorf("failed to get current file position: %w", err)
+	}
+
+	if t.currentOffset != nil && t.currentOffset.OffsetBytes == currentPos && t.currentOffset.LastLine == t.lineCount {
+		return nil
 	}
 
 	offset := &offset.TechLogOffset{

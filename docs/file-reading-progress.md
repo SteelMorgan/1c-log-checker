@@ -4,6 +4,8 @@
 
 Таблица `logs.file_reading_progress` отслеживает прогресс чтения крупных файлов журналов регистрации. Она "зеркалирует" смещения (offsets) из BoltDB, но с дополнительной информацией для мониторинга.
 
+Для мониторинга используйте `logs.file_reading_progress_latest`: writer пишет новые версии INSERT-only, без `ALTER DELETE`, поэтому сырая таблица может содержать несколько физических версий одной и той же записи до фонового merge ClickHouse.
+
 ## Структура таблицы
 
 - `timestamp` - время обновления прогресса
@@ -36,7 +38,7 @@ SELECT
     records_parsed,
     last_timestamp,
     updated_at
-FROM logs.file_reading_progress
+FROM logs.file_reading_progress_latest
 WHERE parser_type = 'event_log'
 ORDER BY updated_at DESC;
 ```
@@ -53,9 +55,8 @@ SELECT
     records_parsed,
     last_timestamp,
     updated_at
-FROM logs.file_reading_progress
+FROM logs.file_reading_progress_latest
 WHERE file_path = '/mnt/logs/reg_1541/.../1Cv8Log/20251101000000.lgp'
-ORDER BY updated_at DESC
 LIMIT 1;
 ```
 
@@ -70,7 +71,7 @@ SELECT
     round((offset_bytes * 100.0 / file_size_bytes), 2) AS progress_percent,
     records_parsed,
     updated_at
-FROM logs.file_reading_progress
+FROM logs.file_reading_progress_latest
 WHERE parser_type = 'event_log'
   AND progress_percent < 100
 ORDER BY file_size_bytes DESC
@@ -87,7 +88,7 @@ LIMIT 10;
 
 ## Примечания
 
-- Таблица использует `ReplacingMergeTree` - последняя запись для каждого файла автоматически заменяет предыдущие
-- Данные автоматически удаляются через 7 дней (TTL)
+- Таблица использует `ReplacingMergeTree` - последняя запись для каждого файла автоматически заменяет предыдущие во время фоновых merge
+- Для актуального логического состояния используйте `logs.file_reading_progress_latest`
+- Данные автоматически удаляются через 90 дней (TTL)
 - Прогресс обновляется периодически во время чтения файла (каждые N записей) и при завершении чтения
-

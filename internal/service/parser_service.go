@@ -516,20 +516,10 @@ func (s *ParserService) createDirectReader(location logreader.LogLocation, clust
 	var metricsCallback eventlog.FileMetricsCallback
 	if s.writer != nil && !s.cfg.ReadOnly {
 		metricsCallback = func(metrics *domain.ParserMetrics) error {
-			// CRITICAL: Flush all pending batches before writing metrics
-			// This ensures that all records are written and metrics are accumulated
-			// This is important for both incremental and final metrics
-			// Use context with timeout to prevent hanging
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			// Incremental metrics should not force ClickHouse batches to flush:
+			// final EOF/shutdown paths flush records, while metrics remain advisory.
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			if err := s.writer.Flush(ctx); err != nil {
-				log.Warn().
-					Err(err).
-					Str("file_path", metrics.FilePath).
-					Uint64("records_parsed", metrics.RecordsParsed).
-					Msg("Failed to flush batches before writing metrics, continuing anyway")
-			}
-			// Now write metrics with accumulated values
 			err := s.writer.WriteParserMetrics(ctx, metrics)
 			if err != nil {
 				log.Error().
