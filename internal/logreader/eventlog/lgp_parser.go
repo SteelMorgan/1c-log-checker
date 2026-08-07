@@ -97,7 +97,6 @@ func (p *LgpParser) Parse(r io.Reader) ([]*domain.EventLogRecord, error) {
 	currentRecord.Grow(2048)
 	braceDepth := 0
 	inQuotes := false
-	escapeNext := false
 
 	for {
 		line, err := reader.ReadString('\n')
@@ -135,22 +134,20 @@ func (p *LgpParser) Parse(r io.Reader) ([]*domain.EventLogRecord, error) {
 		}
 
 		// Process each character to track braces and quotes
-		for _, r := range lineTrimmed {
-			// Handle escape sequences in quoted strings
-			if escapeNext {
-				currentRecord.WriteRune(r)
-				escapeNext = false
-				continue
-			}
+		lineRunes := []rune(lineTrimmed)
+		for i := 0; i < len(lineRunes); i++ {
+			r := lineRunes[i]
 
-			if r == '\\' && inQuotes {
-				escapeNext = true
-				currentRecord.WriteRune(r)
-				continue
-			}
-
-			// Track quotes (strings can contain braces)
+			// Track quotes (strings can contain braces).
+			// In the 1C event log a quote inside a string is escaped by
+			// doubling it (""), backslash escaping is not used by the format.
 			if r == '"' {
+				if inQuotes && i+1 < len(lineRunes) && lineRunes[i+1] == '"' {
+					currentRecord.WriteRune(r)
+					currentRecord.WriteRune(lineRunes[i+1])
+					i++
+					continue
+				}
 				inQuotes = !inQuotes
 				currentRecord.WriteRune(r)
 				continue
@@ -270,7 +267,6 @@ func (p *LgpParser) ParseStream(ctx context.Context, file *os.File, recordChan c
 	currentRecord.Grow(2048)
 	braceDepth := 0
 	inQuotes := false
-	escapeNext := false
 
 	for {
 		// Check context cancellation
@@ -315,22 +311,20 @@ func (p *LgpParser) ParseStream(ctx context.Context, file *os.File, recordChan c
 		}
 
 		// Process each character to track braces and quotes
-		for _, r := range lineTrimmed {
-			// Handle escape sequences in quoted strings
-			if escapeNext {
-				currentRecord.WriteRune(r)
-				escapeNext = false
-				continue
-			}
+		lineRunes := []rune(lineTrimmed)
+		for i := 0; i < len(lineRunes); i++ {
+			r := lineRunes[i]
 
-			if r == '\\' && inQuotes {
-				escapeNext = true
-				currentRecord.WriteRune(r)
-				continue
-			}
-
-			// Track quotes (strings can contain braces)
+			// Track quotes (strings can contain braces).
+			// In the 1C event log a quote inside a string is escaped by
+			// doubling it (""), backslash escaping is not used by the format.
 			if r == '"' {
+				if inQuotes && i+1 < len(lineRunes) && lineRunes[i+1] == '"' {
+					currentRecord.WriteRune(r)
+					currentRecord.WriteRune(lineRunes[i+1])
+					i++
+					continue
+				}
 				inQuotes = !inQuotes
 				currentRecord.WriteRune(r)
 				continue
