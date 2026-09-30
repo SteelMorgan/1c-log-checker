@@ -1,0 +1,219 @@
+{
+  "tools": [
+    {
+      "name": "logc_get_event_log",
+      "description": "Get event log entries from 1C journal (Journal Registratsii).\n\n⚠️ CRITICAL: Before calling this tool, agent MUST read GUIDs from './configs/cluster_map.yaml' file:\n1. Read './configs/cluster_map.yaml' using the Read tool\n2. Extract cluster_guid from the 'clusters' section\n3. Extract infobase_guid from the 'infobases' section\n4. Use these exact GUID values in your tool call (NEVER use placeholder values)\n\nIMPORTANT: Always start with mode='minimal' (default) to save tokens (~60-70% reduction). Only switch to mode='full' if minimal data is insufficient for error analysis or detailed investigation.\n\nDefaults (if not specified):\n- mode='minimal' (saves tokens)\n- level='Error' (only errors)\n- from/to: if omitted, returns latest N records (no time filter) — useful for 'last X errors'\n\nExample workflows:\n1. Last 100 errors (no time range): logc_get_event_log(cluster_guid='...', infobase_guid='...', limit=100)\n2. Errors in time window: logc_get_event_log(cluster_guid='...', infobase_guid='...', from='2025-11-15T14:00:00', to='2025-11-15T14:30:00')\n3. All levels, last 50: logc_get_event_log(cluster_guid='...', infobase_guid='...', level='', limit=50)",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cluster_guid": {
+            "type": "string",
+            "description": "Cluster GUID (MUST be obtained from './configs/cluster_map.yaml' file). Format: UUID (e.g., 'af4fcd7c-0a86-11e7-8e5a-00155d000b0b'). Agent MUST read this file first and extract GUID from 'clusters' section. NEVER use placeholder values."
+          },
+          "infobase_guid": {
+            "type": "string",
+            "description": "Infobase GUID (MUST be obtained from './configs/cluster_map.yaml' file). Format: UUID (e.g., 'b8d1c34e-5f2e-11e9-80e4-00155d000c0a'). Agent MUST read this file first and extract GUID from 'infobases' section. NEVER use placeholder values."
+          },
+          "from": {
+            "type": "string",
+            "description": "Start time in ISO 8601 format (e.g., '2025-11-15T14:00:00'). Optional: defaults to last 10 minutes if not specified."
+          },
+          "to": {
+            "type": "string",
+            "description": "End time in ISO 8601 format (e.g., '2025-11-15T14:30:00'). Optional: defaults to current time if not specified."
+          },
+          "level": {
+            "type": "string",
+            "description": "Filter by log level. Optional: defaults to 'Error' if not specified. Values: 'Error', 'Warning', 'Information', 'Note'.",
+            "enum": ["Error", "Warning", "Information", "Note"]
+          },
+          "mode": {
+            "type": "string",
+            "description": "Output mode. Default: 'minimal' (event_time, level, event_presentation, user_name, comment, metadata_presentation). Use 'full' ONLY if minimal is insufficient.",
+            "enum": ["minimal", "full"],
+            "default": "minimal"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Maximum number of records to return. Default: 1000. Reduce for large time windows.",
+            "default": 1000,
+            "minimum": 1,
+            "maximum": 10000
+          }
+        },
+        "required": ["cluster_guid", "infobase_guid"]
+      }
+    },
+    {
+      "name": "logc_get_tech_log",
+      "description": "Get technical log records (Tekhnologicheskiy Zhurnal) from 1C:Enterprise.\n\n⚠️ CRITICAL: Before calling this tool, agent MUST read GUIDs from './configs/cluster_map.yaml' file:\n1. Read './configs/cluster_map.yaml' using the Read tool\n2. Extract cluster_guid from the 'clusters' section\n3. Extract infobase_guid from the 'infobases' section\n4. Use these exact GUID values in your tool call (NEVER use placeholder values)\n\nToken optimization:\n- ALWAYS start with mode='minimal' (default)\n- Only switch to mode='full' if minimal data is insufficient\n- Use specific event types (name parameter) to reduce data volume\n- Use narrow time windows (15-30 min)\n\nCommon event types:\n- 'EXCP' - exceptions (errors)\n- 'DBMSSQL', 'DBPOSTGRS' - SQL queries\n- 'TLOCK', 'TTIMEOUT', 'TDEADLOCK' - locks and deadlocks\n- 'CONN', 'SESN' - connections and sessions\n\nExample workflow:\n1. Read configs/cluster_map.yaml\n2. Extract GUIDs\n3. Call: logc_get_tech_log(cluster_guid='<from-config>', infobase_guid='<from-config>', from='2025-11-15T10:00:00', to='2025-11-15T10:15:00', name='EXCP', mode='minimal')\n4. If minimal insufficient → retry with mode='full'",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cluster_guid": {
+            "type": "string",
+            "description": "Cluster GUID (MUST be obtained from './configs/cluster_map.yaml' file). Agent MUST read this file first and extract GUID from 'clusters' section. NEVER use placeholder values."
+          },
+          "infobase_guid": {
+            "type": "string",
+            "description": "Infobase GUID (MUST be obtained from './configs/cluster_map.yaml' file). Agent MUST read this file first and extract GUID from 'infobases' section. NEVER use placeholder values."
+          },
+          "from": {
+            "type": "string",
+            "description": "Start time in ISO 8601 format. Use narrow windows for efficiency."
+          },
+          "to": {
+            "type": "string",
+            "description": "End time in ISO 8601 format."
+          },
+          "name": {
+            "type": "string",
+            "description": "Optional filter by event type (e.g., 'EXCP', 'DBMSSQL', 'TLOCK'). Omit for all events."
+          },
+          "mode": {
+            "type": "string",
+            "description": "Output mode. Default: 'minimal'. Use 'full' ONLY if minimal is insufficient.",
+            "enum": ["minimal", "full"],
+            "default": "minimal"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Maximum number of records. Default: 1000.",
+            "default": 1000,
+            "minimum": 1,
+            "maximum": 10000
+          }
+        },
+        "required": ["cluster_guid", "infobase_guid", "from", "to"]
+      }
+    },
+    {
+      "name": "logc_configure_techlog",
+      "description": "Generate logcfg.xml configuration for 1C technical log.\n\n⚠️ CRITICAL: Before calling this tool, agent MUST read GUIDs from './configs/cluster_map.yaml' file:\n1. Read './configs/cluster_map.yaml' using the Read tool\n2. Extract cluster_guid from the 'clusters' section\n3. Extract infobase_guid from the 'infobases' section\n4. Use these exact GUID values in your tool call (NEVER use placeholder values)\n\nThis tool creates XML configuration content that can be saved to logcfg.xml file to enable technical logging.\n\nIMPORTANT: The 'location' attribute in config XML MUST follow the pattern:\n<base_path>/<cluster_guid>/<infobase_guid>\n\nExample:\n<log location=\"D:\\TechLogs\\b0881663-f2a7-4195-b7a2-f7f8e6c3a8f3\\d723aefd-7992-420d-b5f9-a273fd4146be\">\n\nThe tool will validate this structure and return an error if it doesn't match.\n\nCommon use cases:\n- Error tracking: events=['EXCP', 'QERR', 'EXCPCNTX']\n- Performance analysis: events=['DBMSSQL', 'SDBL'], properties=['sql', 'planSQLText', 'duration', 'Rows']\n- Lock investigation: events=['TLOCK', 'TTIMEOUT', 'TDEADLOCK', 'CONN', 'SESN']\n\nIMPORTANT: Technical logging generates large files. Always:\n- Set reasonable history (12-48 hours max)\n- Enable only needed events\n- Disable logging after debugging (use disable_techlog)\n\nExample workflow:\n1. Read './configs/cluster_map.yaml' to get cluster_guid and infobase_guid\n2. Call: configure_techlog(cluster_guid='...', infobase_guid='...', location='D:\\\\TechLogs\\\\<cluster_guid>\\\\<infobase_guid>', history=24, events=['EXCP', 'QERR'], properties=['all'])\n3. Save returned XML to: C:\\\\Program Files\\\\1cv8\\\\conf\\\\logcfg.xml\n4. Restart 1C services to apply\n5. After debugging → call disable_techlog",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cluster_guid": {
+            "type": "string",
+            "description": "Cluster GUID (MUST be obtained from './configs/cluster_map.yaml' file). Agent MUST read this file first and extract GUID from 'clusters' section. Required for path validation. NEVER use placeholder values."
+          },
+          "infobase_guid": {
+            "type": "string",
+            "description": "Infobase GUID (MUST be obtained from './configs/cluster_map.yaml' file). Agent MUST read this file first and extract GUID from 'infobases' section. Required for path validation. NEVER use placeholder values."
+          },
+          "location": {
+            "type": "string",
+            "description": "Directory path for log files. MUST follow pattern: <base_path>/<cluster_guid>/<infobase_guid>\nExample: 'D:\\\\TechLogs\\\\b0881663-f2a7-4195-b7a2-f7f8e6c3a8f3\\\\d723aefd-7992-420d-b5f9-a273fd4146be'\nWill be created if not exists. Path will be validated against provided cluster_guid and infobase_guid."
+          },
+          "config_path": {
+            "type": "string",
+            "description": "Optional path to save logcfg.xml file. If provided, file will be created/updated automatically.\nDefault Windows: 'C:\\\\Program Files\\\\1cv8\\\\conf\\\\logcfg.xml'\nIf not provided, only XML content is returned without saving."
+          },
+          "history": {
+            "type": "integer",
+            "description": "Log retention time in hours. Recommended: 12-48 hours. Files older than this will be deleted automatically.",
+            "minimum": 1,
+            "maximum": 168
+          },
+          "format": {
+            "type": "string",
+            "description": "Log format. Default: 'text'. Use 'json' for easier parsing.",
+            "enum": ["text", "json"],
+            "default": "text"
+          },
+          "events": {
+            "type": "array",
+            "description": "List of event types to log. Common: ['EXCP', 'DBMSSQL', 'TLOCK']. See docs/techlog/logcfg.md for full list.",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "properties": {
+            "type": "array",
+            "description": "List of properties to capture. Default: ['all']. For specific: ['sql', 'planSQLText', 'duration'].",
+            "items": {
+              "type": "string"
+            },
+            "default": ["all"]
+          }
+        },
+        "required": ["cluster_guid", "infobase_guid", "location", "history", "events"]
+      }
+    },
+    {
+      "name": "logc_disable_techlog",
+      "description": "Disable technical logging by clearing logcfg.xml configuration.\n\nIMPORTANT: Always disable technical logging after debugging to prevent disk space issues.\n\nExample workflow:\n1. Call: logc_disable_techlog(config_path='C:\\\\Program Files\\\\1cv8\\\\conf\\\\logcfg.xml')\n2. Restart 1C services to apply (logging will stop)",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "config_path": {
+            "type": "string",
+            "description": "Full path to logcfg.xml file. Default: 'C:\\\\Program Files\\\\1cv8\\\\conf\\\\logcfg.xml'",
+            "default": "C:\\Program Files\\1cv8\\conf\\logcfg.xml"
+          }
+        },
+        "required": ["config_path"]
+      }
+    },
+    {
+      "name": "logc_get_techlog_config",
+      "description": "Read current technical log configuration from logcfg.xml.\n\nUse this to:\n- Check current logging settings\n- Verify configuration before changes\n- Understand what is currently being logged\n\nExample workflow:\n1. Call: logc_get_techlog_config(config_path='C:\\\\Program Files\\\\1cv8\\\\conf\\\\logcfg.xml')\n2. Review current settings\n3. If changes needed → use logc_configure_techlog",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "config_path": {
+            "type": "string",
+            "description": "Full path to logcfg.xml file. Default: 'C:\\\\Program Files\\\\1cv8\\\\conf\\\\logcfg.xml'",
+            "default": "C:\\Program Files\\1cv8\\conf\\logcfg.xml"
+          }
+        },
+        "required": ["config_path"]
+      }
+    },
+    {
+      "name": "logc_save_techlog",
+      "description": "Save current technical log configuration as backup (logcfg.xml.OLD).\n\nIMPORTANT: Always save current configuration before making changes to enable restoration later.\n\nThis tool:\n- Reads current logcfg.xml file\n- Creates backup file logcfg.xml.OLD\n- Overwrites existing .OLD file if present\n\nUse this before:\n- Creating new configuration with logc_configure_techlog\n- Making any changes to techlog settings\n\nExample workflow:\n1. Call: logc_save_techlog(config_path='configs/techlog/logcfg.xml')\n2. If successful → proceed with logc_configure_techlog\n3. If file not found → remember 'no config' state\n4. Later → use logc_restore_techlog to restore backup",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "config_path": {
+            "type": "string",
+            "description": "Full path to logcfg.xml file. If not provided, uses default path from server configuration.",
+            "default": ""
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "logc_restore_techlog",
+      "description": "Restore technical log configuration from backup (logcfg.xml.OLD).\n\nIMPORTANT: Use this to restore previous configuration after investigation is complete.\n\nThis tool:\n- Checks for logcfg.xml.OLD backup file\n- Removes current logcfg.xml (if exists)\n- Renames .OLD file back to .xml\n\nUse this after:\n- Completing techlog investigation\n- When you need to restore original settings\n\nExample workflow:\n1. After investigation complete\n2. Call: logc_restore_techlog(config_path='configs/techlog/logcfg.xml')\n3. Original configuration restored\n\nIf backup not found → returns error (nothing to restore)",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "config_path": {
+            "type": "string",
+            "description": "Full path to logcfg.xml file. If not provided, uses default path from server configuration.",
+            "default": ""
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "logc_get_actual_log_timestamp",
+      "description": "Get maximum timestamp (latest processed record) from tech_log table for specified infobase.\n\n⚠️ CRITICAL: Before calling this tool, agent MUST read GUID from './configs/cluster_map.yaml' file:\n1. Read './configs/cluster_map.yaml' using the Read tool\n2. Extract infobase_guid from the 'infobases' section\n3. Use this exact GUID value as base_id parameter (NEVER use placeholder values)\n\nIMPORTANT: Use this for smart polling to check if logs are ready before querying.\n\nThis tool:\n- Queries ClickHouse: SELECT MAX(ts) FROM logs.tech_log WHERE infobase_guid = ?\n- Returns latest timestamp that has been processed and indexed\n- Useful for determining if logs for target timeframe are ready\n\nUse cases:\n- Smart polling: Check if parser processed logs up to target time\n- Determine time window: Get latest available timestamp before querying\n- Parser readiness: Verify logs are ready before logc_get_tech_log call\n\nExample workflow (smart polling):\n1. Target time = when test/event occurred\n2. Loop: call logc_get_actual_log_timestamp(base_id='...')\n3. If max_timestamp >= target_time → logs ready, proceed to logc_get_tech_log\n4. If max_timestamp < target_time → wait 5 seconds, retry (max 10 iterations)\n\nResponse format:\n{\n  \"base_id\": \"d723aefd-7992-420d-b5f9-a273fd4146be\",\n  \"max_timestamp\": \"2025-11-15T14:23:45.123456Z\",\n  \"has_data\": true\n}\n\nIf no data:\n{\n  \"base_id\": \"...\",\n  \"max_timestamp\": null,\n  \"has_data\": false\n}",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "base_id": {
+            "type": "string",
+            "description": "Infobase GUID (MUST be obtained from './configs/cluster_map.yaml' file). Agent MUST read this file first and extract GUID from 'infobases' section. Format: UUID (e.g., 'd723aefd-7992-420d-b5f9-a273fd4146be'). NEVER use placeholder values."
+          }
+        },
+        "required": ["base_id"]
+      }
+    }
+  ]
+}

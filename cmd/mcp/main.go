@@ -1,0 +1,110 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/SteelMorgan/1c-log-checker/internal/config"
+	"github.com/SteelMorgan/1c-log-checker/internal/mcp"
+	"github.com/SteelMorgan/1c-log-checker/internal/observability"
+	"github.com/rs/zerolog/log"
+)
+
+func main() {
+	// Force stderr output for initial messages (before logger init)
+	fmt.Fprintf(os.Stderr, "MCP Server starting...\n")
+	
+	// Load configuration
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to load configuration: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "Configuration loaded: MCP_PORT=%d, LOG_LEVEL=%s\n", cfg.MCPPort, cfg.LogLevel)
+
+	// Initialize logger
+	// For stdio mode: logs go to stderr (to avoid interfering with JSON-RPC on stdout)
+	// For HTTP mode: logs go to stdout or file
+	mcpMode := os.Getenv("MCP_MODE")
+	logFile := ""
+	if cfg.LogLevel != "debug" {
+		// Only use file logging in HTTP mode (Docker), not in stdio mode
+		if mcpMode != "stdio" && cfg.MCPPort != 0 {
+			logFile = "/app/logs/mcp.log" // Default path for MCP in Docker
+		}
+	}
+	observability.InitLogger(cfg.LogLevel, logFile)
+
+	log.Info().
+		Str("version", "0.1.0").
+		Str("log_level", cfg.LogLevel).
+		Str("log_file", logFile).
+		Int("mcp_port", cfg.MCPPort).
+		Msg("Starting 1C Log MCP Server")
+
+	// Initialize tracer (if enabled)
+	if cfg.TracingEnabled {
+		tracerCfg := observability.TracerConfig{
+			ServiceName:    cfg.ServiceName,
+			ServiceVersion: cfg.ServiceVersion,
+			Endpoint:       cfg.OTLPEndpoint,
+			Protocol:       cfg.OTLPProtocol,
+			Enabled:        cfg.TracingEnabled,
+		}
+		shutdown, err := observability.InitTracer(tracerCfg)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to initialize tracer")
+		} else {
+			defer shutdown(context.Background())
+		}
+	}
+
+	// Create MCP server
+	log.Info().Msg("Creating MCP server instance...")
+	mcpServer, err := mcp.NewServer(cfg)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to create MCP server")
+	}
+	log.Info().Msg("MCP server instance created successfully")
+
+	// Setup graceful shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	// Start MCP server
+	errChan := make(chan error, 1)
+	go func() {
+		if err := mcpServer.Start(ctx); err != nil {
+			errChan <- err
+		}
+	}()
+
+	log.Info().
+		Int("port", cfg.MCPPort).
+		Msg("MCP server started successfully")
+
+	// Wait for shutdown signal or error
+	select {
+	case <-sigChan:
+		log.Info().Msg("Received shutdown signal")
+	case err := <-errChan:
+		log.Error().Err(err).Msg("MCP server error")
+	}
+
+	// Graceful shutdown
+	log.Info().Msg("Shutting down gracefully...")
+	cancel()
+
+	if err := mcpServer.Stop(); err != nil {
+		log.Error().Err(err).Msg("Error during shutdown")
+	}
+
+	log.Info().Msg("MCP server stopped")
+}
+

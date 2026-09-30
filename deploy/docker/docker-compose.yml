@@ -1,0 +1,182 @@
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: 1c-log-clickhouse
+    ports:
+      - "8123:8123"  # HTTP
+      - "9000:9000"  # Native
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ../clickhouse/init:/docker-entrypoint-initdb.d:ro
+      - ../clickhouse/config/users.xml:/etc/clickhouse-server/users.d/users.xml:ro
+      - ../clickhouse/config/system_logs_ttl.xml:/etc/clickhouse-server/config.d/system_logs_ttl.xml:ro
+      - ../clickhouse/config/listen.xml:/etc/clickhouse-server/config.d/listen.xml:ro
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-logs}
+      CLICKHOUSE_SERVICE_USER: ${CLICKHOUSE_USER:-logchecker}
+      CLICKHOUSE_SERVICE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 0
+      CLICKHOUSE_SKIP_USER_SETUP: 1
+      TZ: UTC  # ClickHouse must use UTC to store times correctly
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    networks:
+      - internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  log-parser:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.parser
+    container_name: 1c-log-parser
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    cap_add:
+      - SYS_ADMIN
+    devices:
+      - /dev/fuse
+    security_opt:
+      - apparmor:unconfined
+    volumes:
+      - parser_offsets:/app/offsets
+      - ../../logs:/app/logs
+      - work_data:/mnt/work_data:ro
+    environment:
+      # sshfs mount settings
+      ONEC_VM_IP: ${ONEC_VM_IP:-192.168.250.2}
+      ONEC_VM_USER: ${ONEC_VM_USER:-sandbox}
+      ONEC_SRVINFO_REMOTE: ${ONEC_SRVINFO_REMOTE:-/opt/onec-export/srvinfo}
+      ONEC_TECHLOG_REMOTE: ${ONEC_TECHLOG_REMOTE:-/opt/onec-export/logs}
+      ONEC_SSH_KEY_PATH: ${ONEC_SSH_KEY_PATH}
+      # parser reads from sshfs mount points
+      LOG_DIRS: /mnt/srvinfo
+      TECHLOG_DIRS: /mnt/techlog
+      # clickhouse
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: ${CLICKHOUSE_PORT:-9000}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-logs}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-logchecker}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      # parser settings
+      LOG_RETENTION_DAYS: ${LOG_RETENTION_DAYS:-30}
+      READ_ONLY: ${READ_ONLY:-false}
+      ENABLE_DEDUPLICATION: ${ENABLE_DEDUPLICATION:-false}
+      MAX_WORKERS: ${MAX_WORKERS:-4}
+      MAX_GLOBAL_WORKERS: ${MAX_GLOBAL_WORKERS:-0}
+      BATCH_SIZE: ${BATCH_SIZE:-5000}
+      BATCH_FLUSH_TIMEOUT: ${BATCH_FLUSH_TIMEOUT:-1000}
+      LOG_LEVEL: ${LOG_LEVEL:-error}
+      TZ: ${TZ:-UTC}
+    networks:
+      - internal
+    user: "0:0"
+    restart: unless-stopped
+
+  mcp-server:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.mcp
+    container_name: 1c-log-mcp
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    ports:
+      - "${MCP_PORT:-8080}:8080"
+    cap_add:
+      - SYS_ADMIN
+    devices:
+      - /dev/fuse
+    security_opt:
+      - apparmor:unconfined
+    volumes:
+      - ../../configs:/app/configs:ro
+      - ${TECHLOG_CONFIG_DIR:-../../configs/techlog}:/app/techlog-config:rw
+      - mcp_logs:/app/logs
+      - work_data:/mnt/work_data:ro
+    environment:
+      ONEC_VM_IP: ${ONEC_VM_IP:-192.168.250.2}
+      ONEC_VM_USER: ${ONEC_VM_USER:-sandbox}
+      ONEC_TECHLOG_CONFIG_REMOTE: ${ONEC_TECHLOG_CONFIG_REMOTE:-/opt/1cv8/conf}
+      ONEC_SSH_KEY_PATH: ${ONEC_SSH_KEY_PATH}
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: ${CLICKHOUSE_PORT:-9000}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-logs}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-logchecker}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      MCP_PORT: ${MCP_PORT:-8080}
+      LOG_LEVEL: ${LOG_LEVEL:-error}
+      TECHLOG_CONFIG_DIR: /app/techlog-config
+      TECHLOG_DIRS: ${TECHLOG_DIRS:-/var/log/techlog}
+      TZ: ${TZ:-UTC}
+    user: "0:0"
+    networks:
+      - internal
+      - monitoring
+      - infra
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: 1c-log-grafana
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ../grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ../grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./init-grafana.sh:/docker-init/init-grafana.sh:ro
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_INSTALL_PLUGINS: grafana-clickhouse-datasource
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-logs}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-logchecker}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      TZ: ${TZ:-UTC}
+    networks:
+      - internal
+      - monitoring
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c", "sh /docker-init/init-grafana.sh & exec /run.sh"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  clickhouse_data:
+    driver: local
+  grafana_data:
+    driver: local
+  parser_offsets:
+    driver: local
+  mcp_logs:
+    driver: local
+  work_data:
+    external: true
+    name: agent-work-sandbox-1c
+
+networks:
+  internal:
+    driver: bridge
+  monitoring:
+    driver: bridge
+  infra:
+    external: true

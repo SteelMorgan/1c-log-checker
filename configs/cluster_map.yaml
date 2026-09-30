@@ -1,0 +1,26 @@
+# Cluster and Infobase GUID Mapping
+# This file maps GUIDs to human-readable names for better readability in logs and UI
+
+clusters:
+  # Example cluster
+   "b0881663-f2a7-4195-b7a2-f7f8e6c3a8f3":
+     name: "Local cluster"
+     notes: "My test cluster"
+
+infobases:
+  # Example infobase
+   "d723aefd-7992-420d-b5f9-a273fd4146be":
+     name: "GBIG PAM"
+     cluster_guid: "b0881663-f2a7-4195-b7a2-f7f8e6c3a8f3"
+     notes: "AI Test GBIG PUM base"
+
+# How to get GUIDs:
+# 1. Using rac.exe (1C:Enterprise Administration Console):
+#    rac.exe cluster list
+#    rac.exe infobase summary --cluster <cluster-guid> --infobase <infobase-guid>
+#
+# 2. For file-based infobases:
+#    Check the 1Cv8Log directory name in your infobase folder
+#
+# 3. See docs/guides/get-guids.md for detailed instructions
+

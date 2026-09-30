@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<!--
+    Allow connections from other Docker containers.
+    Without this override ClickHouse listens only on 127.0.0.1.
+-->
+<clickhouse>
+    <listen_host>0.0.0.0</listen_host>
+</clickhouse>
