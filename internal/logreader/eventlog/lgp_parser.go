@@ -18,9 +18,9 @@ package eventlog
 import (
 	"bufio"
 	"context"
-	"os"
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -30,17 +30,23 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+const maxLGPRecordBytes = 16 * 1024 * 1024
+const maxLGPDepth = 64
+
 // LgpParser parses .lgp files in 1C Event Log format
 // Format: 1CV8LOG(ver 2.0)
 //
 //	<infobase_guid>
 //	{timestamp,level,{transaction},session,user,computer,event,record,app,"comment",data_sep,{metadata},"metadata_pres",...,{props}}
 type LgpParser struct {
-	infobaseGUID string
-	clusterGUID  string
-	clusterName  string
-	infobaseName string
-	lgfReader    *LgfReader // For resolving user_id, computer_id, etc.
+	infobaseGUID  string
+	clusterGUID   string
+	clusterName   string
+	infobaseName  string
+	checkpoint    int64
+	recordsParsed int64
+	lastTimestamp time.Time
+	lgfReader     *LgfReader // For resolving user_id, computer_id, etc.
 }
 
 // NewLgpParser creates a new parser for .lgp files
@@ -225,195 +231,114 @@ func (p *LgpParser) Parse(r io.Reader) ([]*domain.EventLogRecord, error) {
 // offsetCallback is called periodically to save progress (every 1000 records)
 // startOffset is the byte offset from which to start reading (0 = from beginning)
 func (p *LgpParser) ParseStream(ctx context.Context, file *os.File, recordChan chan<- *domain.EventLogRecord, offsetCallback func(currentOffset int64, recordsCount int64, lastTimestamp time.Time) error, startOffset int64) error {
-	// Use buffered reader with 4MB buffer for better performance
-	reader := bufio.NewReaderSize(file, 4*1024*1024)
-	
-	lineNum := 0
-	recordsCount := 0
-	const offsetSaveInterval = 100000 // Save offset every 100000 records (reduced frequency for performance)
-
-	// Only read header if we're at the beginning of the file
-	// If we're resuming from offset, skip header reading
+	// ReadSlice ограничивает временную порцию 64 KiB даже без перевода строки.
+	reader := bufio.NewReaderSize(file, 64*1024)
+	position := startOffset
+	p.checkpoint = startOffset
+	p.recordsParsed = 0
+	p.lastTimestamp = time.Time{}
+	var count int64
+	var lastTimestamp time.Time
+	defer func() {
+		if offsetCallback != nil {
+			if err := offsetCallback(p.checkpoint, count, lastTimestamp); err != nil {
+				log.Warn().Err(err).Msg("Failed to save final LGP checkpoint")
+			}
+		}
+	}()
 	if startOffset == 0 {
-		// Read header
-		line, err := reader.ReadString('\n')
-		if err != nil && err != io.EOF {
-			return fmt.Errorf("failed to read header: %w", err)
+		for i := 0; i < 2; i++ {
+			line, err := reader.ReadSlice('\n')
+			if err == io.EOF {
+				return nil
+			} // Заголовок ещё может дописываться.
+			if err != nil {
+				return fmt.Errorf("invalid or oversized LGP header: %w", err)
+			}
+			position += int64(len(line))
+			value := strings.TrimSpace(strings.TrimPrefix(string(line), "\ufeff"))
+			if i == 0 && !strings.HasPrefix(value, "1CV8LOG") {
+				return fmt.Errorf("invalid LGP header")
+			}
+			if i == 1 && p.infobaseGUID == "" {
+				p.infobaseGUID = value
+			}
 		}
-		if line == "" {
-			return fmt.Errorf("empty file")
-		}
-		header := strings.TrimSpace(line)
-		// Remove BOM (Byte Order Mark) if present
-		header = strings.TrimPrefix(header, "\ufeff")
-		if !strings.HasPrefix(header, "1CV8LOG") {
-			return fmt.Errorf("invalid header: %s", header)
-		}
-		lineNum++
-
-		// Read infobase GUID (if not already set)
-		line, err = reader.ReadString('\n')
-		if err != nil && err != io.EOF {
-			return fmt.Errorf("failed to read infobase GUID: %w", err)
-		}
-		guid := strings.TrimSpace(line)
-		if p.infobaseGUID == "" {
-			p.infobaseGUID = guid
-		}
-		lineNum++
+		p.checkpoint = position
 	}
-
-	// Read all records (records can span multiple lines)
-	// Based on C# BracketsListReader logic: track brace depth to find complete records
-	// Pre-allocate builder with estimated record size (2KB per record)
-	currentRecord := strings.Builder{}
-	currentRecord.Grow(2048)
-	braceDepth := 0
-	inQuotes := false
-	escapeNext := false
-
+	var record strings.Builder
+	depth := 0
+	quoted := false
 	for {
-		// Check context cancellation
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-
-		line, err := reader.ReadString('\n')
-		if err != nil && err != io.EOF {
-			return fmt.Errorf("scanner error: %w", err)
-		}
-		if line == "" && err == io.EOF {
-			break
-		}
-		lineNum++
-
-		// Trim leading whitespace for processing, but preserve structure
-		lineTrimmed := strings.TrimLeft(line, " \t")
-
-		// Handle lines that start with comma
-		// If we're building a record (braceDepth > 0), comma is part of continuation - add it
-		// If we're not building a record (braceDepth == 0), comma is separator - skip it
-		if strings.HasPrefix(lineTrimmed, ",") {
-			if braceDepth == 0 {
-				// Not building a record - comma is separator, check what's after it
-				afterComma := strings.TrimSpace(lineTrimmed[1:])
-				if strings.HasPrefix(afterComma, "{") {
-					// New record starts after comma - process from after comma
-					lineTrimmed = afterComma
-				} else if afterComma == "" {
-					// Just a comma, skip this line
+		chunk, readErr := reader.ReadSlice('\n')
+		for _, b := range chunk {
+			position++
+			if depth == 0 {
+				if b == ' ' || b == '\t' || b == '\r' || b == '\n' || b == ',' {
+					p.checkpoint = position
 					continue
-				} else {
-					// Something else after comma - might be continuation, but we're not building
-					// This shouldn't happen, but handle it
-					lineTrimmed = afterComma
+				}
+				if b != '{' {
+					return fmt.Errorf("invalid LGP record boundary at byte %d", position-1)
+				}
+				record.Reset()
+				quoted = false
+			}
+			if record.Len() >= maxLGPRecordBytes {
+				return fmt.Errorf("LGP record exceeds %d byte limit at checkpoint %d", maxLGPRecordBytes, p.checkpoint)
+			}
+			record.WriteByte(b)
+			if b == '"' {
+				quoted = !quoted
+				continue
+			}
+			if quoted {
+				continue
+			}
+			if b == '{' {
+				depth++
+				if depth > maxLGPDepth {
+					return fmt.Errorf("LGP nesting exceeds %d levels", maxLGPDepth)
 				}
 			}
-			// If braceDepth > 0, we're building a record - comma is part of it, process normally
-		}
-
-		// Process each character to track braces and quotes
-		for _, r := range lineTrimmed {
-			// Handle escape sequences in quoted strings
-			if escapeNext {
-				currentRecord.WriteRune(r)
-				escapeNext = false
+			if b != '}' {
 				continue
 			}
-
-			if r == '\\' && inQuotes {
-				escapeNext = true
-				currentRecord.WriteRune(r)
+			depth--
+			if depth != 0 {
 				continue
 			}
-
-			// Track quotes (strings can contain braces)
-			if r == '"' {
-				inQuotes = !inQuotes
-				currentRecord.WriteRune(r)
-				continue
-			}
-
-			// Only count braces when not inside quotes
-			if !inQuotes {
-				if r == '{' {
-					// If we're starting a new record and depth was 0, this is the start
-					if braceDepth == 0 {
-						currentRecord.Reset()
-					}
-					braceDepth++
-					currentRecord.WriteRune(r)
-				} else if r == '}' {
-					braceDepth--
-					currentRecord.WriteRune(r)
-
-					// If brace depth is 0, we have a complete record
-					if braceDepth == 0 {
-						recordStr := strings.TrimSpace(currentRecord.String())
-
-						// Skip empty records
-						if recordStr == "" || recordStr == "{}" {
-							currentRecord.Reset()
-							continue
-						}
-
-						record, err := p.parseRecord(recordStr)
-						if err != nil {
-							log.Warn().Err(err).Int("line", lineNum).Str("line_preview", truncate(recordStr, 100)).Msg("Failed to parse record, skipping")
-							currentRecord.Reset()
-							continue
-						}
-
-						// Send record to channel (non-blocking with context check)
-						select {
-						case <-ctx.Done():
-							return ctx.Err()
-						case recordChan <- record:
-							recordsCount++
-							
-							// Save offset periodically (every offsetSaveInterval records)
-							if offsetCallback != nil && recordsCount%offsetSaveInterval == 0 {
-								// Get current file position
-								currentPos, err := file.Seek(0, io.SeekCurrent)
-								if err == nil {
-									if err := offsetCallback(currentPos, int64(recordsCount), record.EventTime); err != nil {
-										log.Warn().Err(err).Msg("Failed to save offset")
-									}
-								}
-							}
-						}
-						currentRecord.Reset()
-					}
-				} else {
-					currentRecord.WriteRune(r)
-				}
+			event, err := p.parseRecord(record.String())
+			if err != nil {
+				log.Warn().Err(err).Int64("offset", position).Msg("Failed to parse complete LGP record, skipping")
 			} else {
-				// Inside quotes - just copy
-				currentRecord.WriteRune(r)
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case recordChan <- event:
+					count++
+					lastTimestamp = event.EventTime
+					p.recordsParsed, p.lastTimestamp = count, lastTimestamp
+				}
+			}
+			record.Reset()
+			p.checkpoint = position
+			if offsetCallback != nil && count > 0 && count%100000 == 0 {
+				if err := offsetCallback(p.checkpoint, count, lastTimestamp); err != nil {
+					log.Warn().Err(err).Msg("Failed to save LGP checkpoint")
+				}
 			}
 		}
-
-		// If we're building a record and haven't closed it, add newline
-		// (but only if we actually added something to the record)
-		if braceDepth > 0 && currentRecord.Len() > 0 {
-			currentRecord.WriteRune('\n')
+		if readErr == io.EOF {
+			return nil
 		}
-
-		// Check if we reached EOF
-		if err == io.EOF {
-			break
+		if readErr != nil && readErr != bufio.ErrBufferFull {
+			return fmt.Errorf("read LGP: %w", readErr)
 		}
 	}
-
-	// Check if there's an incomplete record at the end
-	if braceDepth > 0 && currentRecord.Len() > 0 {
-		log.Warn().Int("line", lineNum).Str("record_preview", truncate(currentRecord.String(), 100)).Msg("Incomplete record at end of file, skipping")
-	}
-
-	log.Info().Int("records", recordsCount).Msg("Parsed .lgp file (streaming mode)")
-	return nil
 }
 
 // parseRecord parses a single record from .lgp file
@@ -443,6 +368,7 @@ func (p *LgpParser) parseRecord(line string) (*domain.EventLogRecord, error) {
 	defaultTransactionDate := time.Date(1980, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	record := &domain.EventLogRecord{
+		SourceBytes:         len(line) + 2,
 		ClusterGUID:         p.clusterGUID,
 		ClusterName:         p.clusterName,
 		InfobaseGUID:        p.infobaseGUID,
@@ -645,6 +571,9 @@ func (p *LgpParser) parseRecord(line string) (*domain.EventLogRecord, error) {
 		data, err := parseDataField(tokens[11])
 		if err == nil {
 			record.Data = data
+		} else {
+			// Сохраняем исходное техническое значение при исчерпании decode budget.
+			record.Data = tokens[11]
 		}
 	}
 
@@ -687,63 +616,58 @@ func (p *LgpParser) parseRecord(line string) (*domain.EventLogRecord, error) {
 
 // tokenizeRecord tokenizes a record line, handling nested structures
 func tokenizeRecord(line string) ([]string, error) {
+	if len(line) > maxLGPRecordBytes {
+		return nil, fmt.Errorf("LGP token input exceeds bound")
+	}
 	var tokens []string
-	var current strings.Builder
-	depth := 0
-	inQuotes := false
-	escape := false
-
-	for i, r := range line {
-		if escape {
-			current.WriteRune(r)
-			escape = false
+	start, depth := 0, 0
+	quoted := false
+	// Срезы ссылаются на исходную строку. Вложенные P не копируют весь
+	// оставшийся текст заново на каждом уровне рекурсии.
+	appendToken := func(end int) error {
+		token := strings.TrimSpace(line[start:end])
+		if token != "" {
+			if len(tokens) >= 65536 {
+				return fmt.Errorf("too many LGP fields")
+			}
+			tokens = append(tokens, token)
+		}
+		return nil
+	}
+	for i, b := range []byte(line) {
+		if b == '"' {
+			quoted = !quoted
 			continue
 		}
-
-		switch r {
-		case '\\':
-			escape = true
-			current.WriteRune(r)
-		case '"':
-			inQuotes = !inQuotes
-			current.WriteRune(r)
+		if quoted {
+			continue
+		}
+		switch b {
 		case '{':
-			if !inQuotes {
-				depth++
+			depth++
+			if depth > maxLGPDepth {
+				return nil, fmt.Errorf("LGP nesting exceeds bound")
 			}
-			current.WriteRune(r)
 		case '}':
-			if !inQuotes {
-				depth--
+			depth--
+			if depth < 0 {
+				return nil, fmt.Errorf("unbalanced LGP data")
 			}
-			current.WriteRune(r)
 		case ',':
-			if !inQuotes && depth == 0 {
-				// End of token
-				token := strings.TrimSpace(current.String())
-				if token != "" {
-					tokens = append(tokens, token)
+			if depth == 0 {
+				if err := appendToken(i); err != nil {
+					return nil, err
 				}
-				current.Reset()
-			} else {
-				current.WriteRune(r)
+				start = i + 1
 			}
-		default:
-			current.WriteRune(r)
-		}
-
-		// Safety check
-		if i > 10000 {
-			return nil, fmt.Errorf("line too long or malformed")
 		}
 	}
-
-	// Add last token
-	token := strings.TrimSpace(current.String())
-	if token != "" {
-		tokens = append(tokens, token)
+	if quoted || depth != 0 {
+		return nil, fmt.Errorf("incomplete LGP tokens")
 	}
-
+	if err := appendToken(len(line)); err != nil {
+		return nil, err
+	}
 	return tokens, nil
 }
 
@@ -1099,6 +1023,15 @@ func getEventPresentation(code string) string {
 // parseDataField parses complex data structure
 // Based on C# GetData method
 func parseDataField(s string) (string, error) {
+	budget := 2 * maxLGPRecordBytes
+	return parseDataFieldBounded(s, 0, &budget)
+}
+
+func parseDataFieldBounded(s string, depth int, budget *int) (string, error) {
+	if depth > maxLGPDepth || len(s) > *budget {
+		return "", fmt.Errorf("LGP data decode budget exceeded")
+	}
+	*budget -= len(s)
 	// Remove outer braces if present
 	s = strings.TrimSpace(s)
 	s = strings.TrimPrefix(s, "{")
@@ -1148,7 +1081,10 @@ func parseDataField(s string) (string, error) {
 
 		// Skip first token (sub-data type)
 		for i := 1; i < len(subTokens); i++ {
-			subValue, err := parseDataField("{" + subTokens[i] + "}")
+			subValue, err := parseDataFieldBounded(subTokens[i], depth+1, budget)
+			if err != nil {
+				return "", err
+			}
 			if err == nil && subValue != "" {
 				result.WriteString(fmt.Sprintf("Item %d: %s\n", i, subValue))
 			}

@@ -15,7 +15,7 @@ COPY cmd/parser ./cmd/parser
 COPY internal ./internal
 
 # Build binary
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o parser ./cmd/parser
+RUN CGO_ENABLED=0 GOOS=linux go build -p 4 -a -installsuffix cgo -o parser ./cmd/parser
 
 # Runtime stage
 FROM alpine:latest

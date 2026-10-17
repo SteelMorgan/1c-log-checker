@@ -58,14 +58,15 @@ func NewParserService(cfg *config.Config) (*ParserService, error) {
 		return nil, fmt.Errorf("config is required")
 	}
 
-	limiter := workerlimit.New(cfg.MaxGlobalWorkers)
-	if cfg.MaxGlobalWorkers > 0 {
-		log.Info().
-			Int("max_global_workers", cfg.MaxGlobalWorkers).
-			Msg("Global worker limiter enabled")
-	} else {
-		log.Info().Msg("Global worker limiter disabled (MAX_GLOBAL_WORKERS <= 0)")
+	maxGlobalWorkers := cfg.MaxGlobalWorkers
+	if maxGlobalWorkers <= 0 {
+		maxGlobalWorkers = cfg.MaxWorkers
+		if maxGlobalWorkers <= 0 {
+			maxGlobalWorkers = 4
+		}
 	}
+	limiter := workerlimit.New(maxGlobalWorkers)
+	log.Info().Int("max_global_workers", maxGlobalWorkers).Msg("Global worker limiter enabled")
 
 	// Initialize offset storage
 	offsetStore, err := offset.NewBoltDBStore("offsets/parser.db")
@@ -157,6 +158,29 @@ func (s *ParserService) Start(ctx context.Context) error {
 		Int("tech_log_dirs", len(s.cfg.TechLogDirs)).
 		Msg("Parser service starting...")
 
+	if s.writer != nil {
+		interval := time.Duration(s.cfg.BatchFlushTimeout) * time.Millisecond
+		if interval <= 0 {
+			interval = time.Second
+		}
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if err := s.writer.Flush(ctx); err != nil {
+						log.Error().Err(err).Msg("Failed to flush pending parser batches")
+					}
+				}
+			}
+		}()
+	}
+
 	// Scan for event logs
 	if len(s.cfg.LogDirs) > 0 {
 		locations, err := logreader.ScanForLogs(s.cfg.LogDirs)
@@ -165,6 +189,15 @@ func (s *ParserService) Start(ctx context.Context) error {
 		} else {
 			log.Info().Int("locations", len(locations)).Msg("Found event log locations")
 
+			if s.cfg.InitialOffsetMode == "tail" {
+				store, ok := s.offsetStore.(*offset.BoltDBStore)
+				if !ok {
+					return fmt.Errorf("tail mode requires BoltDB offsets")
+				}
+				if err := eventlog.InitializeTailRoots(ctx, store, s.cfg.InitialOffsetRoots, locations); err != nil {
+					return fmt.Errorf("initialize eventlog tail: %w", err)
+				}
+			}
 			// Start reader for each location
 			for _, loc := range locations {
 				s.wg.Add(1)
@@ -312,7 +345,7 @@ func (s *ParserService) runEventLogReader(ctx context.Context, location logreade
 	}
 
 	// Read and process events
-	batch := make([]*domain.EventLogRecord, 0, 500)
+	batchCount := 0
 
 	for {
 		select {
@@ -472,7 +505,7 @@ func (s *ParserService) runEventLogReader(ctx context.Context, location logreade
 				}
 			} else {
 				// In READ_ONLY mode, log each record in detail for comparison
-				batch = append(batch, record)
+				batchCount++
 
 				// Log each record with full details for comparison with 1C configurator
 				log.Info().
@@ -493,13 +526,13 @@ func (s *ParserService) runEventLogReader(ctx context.Context, location logreade
 					Msg("Parsed event log record")
 
 				// Also log summary every 100 records
-				if len(batch) >= 100 {
+				if batchCount >= 100 {
 					log.Info().
-						Int("total_count", len(batch)).
+						Int("total_count", batchCount).
 						Str("cluster_guid", record.ClusterGUID).
 						Str("infobase_guid", record.InfobaseGUID).
 						Msg("Batch summary (READ_ONLY mode)")
-					batch = batch[:0]
+					batchCount = 0
 				}
 			}
 		}

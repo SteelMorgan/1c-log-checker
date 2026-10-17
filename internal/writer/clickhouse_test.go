@@ -1,18 +1,14 @@
 package writer
 
 import (
-	"context"
 	"testing"
 	"time"
-
-	"github.com/SteelMorgan/1c-log-checker/internal/domain"
-	"github.com/SteelMorgan/1c-log-checker/internal/retry"
 )
 
 func TestBatchConfig(t *testing.T) {
 	cfg := BatchConfig{
-		MaxSize:            1000,
-		FlushTimeout:       1000,
+		MaxSize:             1000,
+		FlushTimeout:        1000,
 		EnableDeduplication: false,
 	}
 
@@ -30,7 +26,6 @@ func TestClickHouseWriterMaxBatchSize(t *testing.T) {
 	cfg := BatchConfig{
 		MaxSize: 5000,
 	}
-	retryCfg := retry.DefaultConfig()
 
 	// This would require a real ClickHouse connection
 	// For now, just test the logic
@@ -88,11 +83,11 @@ func TestEnsureValidDateTime(t *testing.T) {
 func TestBatchSizeLimit(t *testing.T) {
 	// Test that batch size limit prevents memory leaks
 	// This is a logic test without actual ClickHouse connection
-	
+
 	cfg := BatchConfig{
 		MaxSize: 1000,
 	}
-	
+
 	maxBatchSize := cfg.MaxSize * 2
 	if maxBatchSize > 50000 {
 		maxBatchSize = 50000
@@ -111,4 +106,3 @@ func TestBatchSizeLimit(t *testing.T) {
 		}
 	}
 }
-

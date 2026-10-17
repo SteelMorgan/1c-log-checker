@@ -20,12 +20,15 @@ type Config struct {
 	LogDirs     []string // Paths to event log directories (журнал регистрации)
 	TechLogDirs []string // Paths to tech log directories (технологический журнал)
 
+	InitialOffsetMode  string
+	InitialOffsetRoots []string
+
 	// Parser settings
 	LogRetentionDays    int  // TTL in days
 	ReadOnly            bool // Technical mode: read logs but don't write to ClickHouse
 	EnableDeduplication bool // Enable deduplication check (slower but prevents duplicates)
 	MaxWorkers          int  // Max parallel workers for file processing (default: 4)
-	MaxGlobalWorkers    int  // Global limit for concurrent workers across all readers/tailers (<=0 disables)
+	MaxGlobalWorkers    int  // Global limit across readers/tailers (<=0 uses MaxWorkers)
 	BatchSize           int  // Batch size for ClickHouse inserts (default: 5000)
 	BatchFlushTimeout   int  // Batch flush timeout in milliseconds (default: 1000)
 
@@ -55,11 +58,13 @@ type Config struct {
 // Load loads configuration from environment variables
 func Load() (*Config, error) {
 	cfg := &Config{
-		ClickHouseHost: getEnv("CLICKHOUSE_HOST", "localhost"),
-		ClickHousePort: getEnvInt("CLICKHOUSE_PORT", 9000),
-		ClickHouseDB:   getEnv("CLICKHOUSE_DB", "logs"),
-		ClickHouseUser: getEnv("CLICKHOUSE_USER", "default"),
-		ClickHousePass: getEnv("CLICKHOUSE_PASSWORD", ""),
+		InitialOffsetMode:  getEnv("INITIAL_OFFSET_MODE", "beginning"),
+		InitialOffsetRoots: parsePathList(getEnv("INITIAL_OFFSET_ROOTS", "")),
+		ClickHouseHost:     getEnv("CLICKHOUSE_HOST", "localhost"),
+		ClickHousePort:     getEnvInt("CLICKHOUSE_PORT", 9000),
+		ClickHouseDB:       getEnv("CLICKHOUSE_DB", "logs"),
+		ClickHouseUser:     getEnv("CLICKHOUSE_USER", "default"),
+		ClickHousePass:     getEnv("CLICKHOUSE_PASSWORD", ""),
 
 		LogDirs:     parsePathList(getEnv("LOG_DIRS", "")),
 		TechLogDirs: parsePathList(getEnv("TECHLOG_DIRS", "")),
@@ -89,6 +94,10 @@ func Load() (*Config, error) {
 		ServiceVersion: getEnv("SERVICE_VERSION", "0.1.0"),
 
 		IsInDocker: getEnv("CLICKHOUSE_HOST", "localhost") != "localhost",
+	}
+
+	if err := cfg.validateInitialOffsets(); err != nil {
+		return nil, err
 	}
 
 	// Validate configuration

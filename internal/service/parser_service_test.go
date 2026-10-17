@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -9,6 +11,7 @@ import (
 )
 
 func TestNewParserService(t *testing.T) {
+	parserTestDirectory(t)
 	// Test with nil config
 	_, err := NewParserService(nil)
 	if err == nil {
@@ -41,6 +44,7 @@ func TestNewParserService(t *testing.T) {
 }
 
 func TestParserServiceGetClickHouseConn(t *testing.T) {
+	parserTestDirectory(t)
 	cfg := &config.Config{
 		ClickHouseHost: "localhost",
 		ClickHousePort: 9000,
@@ -55,6 +59,8 @@ func TestParserServiceGetClickHouseConn(t *testing.T) {
 		t.Fatalf("Failed to create parser service: %v", err)
 	}
 
+	defer service.Stop()
+
 	// In ReadOnly mode, connection should be nil
 	conn := service.GetClickHouseConn()
 	if conn != nil {
@@ -63,6 +69,7 @@ func TestParserServiceGetClickHouseConn(t *testing.T) {
 }
 
 func TestParserServiceContextCancellation(t *testing.T) {
+	parserTestDirectory(t)
 	cfg := &config.Config{
 		ClickHouseHost: "localhost",
 		ClickHousePort: 9000,
@@ -103,4 +110,24 @@ func TestParserServiceContextCancellation(t *testing.T) {
 	if err := service.Stop(); err != nil {
 		t.Errorf("Stop failed: %v", err)
 	}
+}
+
+func parserTestDirectory(t *testing.T) {
+	t.Helper()
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "offsets"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(previous); err != nil {
+			t.Error(err)
+		}
+	})
 }
