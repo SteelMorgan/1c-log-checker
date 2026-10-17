@@ -39,6 +39,9 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.parser
     container_name: 1c-log-parser
+    cpus: ${PARSER_CPUS:-4}
+    mem_limit: ${PARSER_MEMORY_LIMIT:-10g}
+    memswap_limit: ${PARSER_MEMORY_SWAP_LIMIT:-12g}
     depends_on:
       clickhouse:
         condition: service_healthy
@@ -69,11 +72,12 @@ services:
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-logchecker}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
       # parser settings
+      GOMAXPROCS: ${PARSER_GOMAXPROCS:-4}
       LOG_RETENTION_DAYS: ${LOG_RETENTION_DAYS:-30}
       READ_ONLY: ${READ_ONLY:-false}
       ENABLE_DEDUPLICATION: ${ENABLE_DEDUPLICATION:-false}
       MAX_WORKERS: ${MAX_WORKERS:-4}
-      MAX_GLOBAL_WORKERS: ${MAX_GLOBAL_WORKERS:-0}
+      MAX_GLOBAL_WORKERS: ${MAX_GLOBAL_WORKERS:-4}
       BATCH_SIZE: ${BATCH_SIZE:-5000}
       BATCH_FLUSH_TIMEOUT: ${BATCH_FLUSH_TIMEOUT:-1000}
       LOG_LEVEL: ${LOG_LEVEL:-error}

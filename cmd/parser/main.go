@@ -10,6 +10,7 @@ import (
 
 	"github.com/SteelMorgan/1c-log-checker/internal/config"
 	"github.com/SteelMorgan/1c-log-checker/internal/health"
+	"github.com/SteelMorgan/1c-log-checker/internal/memorybudget"
 	"github.com/SteelMorgan/1c-log-checker/internal/metrics"
 	"github.com/SteelMorgan/1c-log-checker/internal/observability"
 	"github.com/SteelMorgan/1c-log-checker/internal/service"
@@ -17,6 +18,7 @@ import (
 )
 
 func main() {
+	memoryLimit := memorybudget.Configure()
 	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {
@@ -34,6 +36,7 @@ func main() {
 
 	log.Info().
 		Str("version", "0.1.0").
+		Int64("go_memory_limit_bytes", memoryLimit).
 		Msg("Starting 1C Log Parser")
 
 	// Initialize tracer (if enabled)
@@ -72,10 +75,10 @@ func main() {
 		healthChecker = health.NewChecker(parserSvc.GetClickHouseConn())
 		healthMux := http.NewServeMux()
 		healthMux.HandleFunc("/health", healthChecker.HTTPHandler())
-		
+
 		// Add Prometheus metrics endpoint
 		healthMux.Handle("/metrics", metrics.HTTPHandler())
-		
+
 		healthServer := &http.Server{
 			Addr:    ":8081",
 			Handler: healthMux,

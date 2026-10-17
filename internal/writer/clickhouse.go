@@ -35,25 +35,28 @@ type ClickHouseWriter struct {
 	conn     clickhouse.Conn
 	cfg      BatchConfig
 	retryCfg retry.Config
-	
+
 	eventLogBatch []*domain.EventLogRecord
 	techLogBatch  []*domain.TechLogRecord
-	
+
 	lastFlush time.Time
-	
+
 	// Mutex to protect batch operations (append, flush)
-	batchMutex sync.Mutex
-	
+	batchMutex    sync.Mutex
+	writeMutex    sync.Mutex
+	eventLogBytes int
+	techLogBytes  int
+
 	// Maximum batch size to prevent memory leaks (default: 2x MaxSize)
 	maxBatchSize int
-	
+
 	// Accumulated deduplication and writing metrics (for reporting)
 	deduplicationTimeAccumulator time.Duration
-	writingTimeAccumulator      time.Duration
-	deduplicationRecordsCount   uint64
-	writingRecordsCount         uint64
-	metricsMutex                sync.Mutex
-	
+	writingTimeAccumulator       time.Duration
+	deduplicationRecordsCount    uint64
+	writingRecordsCount          uint64
+	metricsMutex                 sync.Mutex
+
 	// Error normalization (synchronous, during batch preparation)
 	normalizer        *normalizer.CommentNormalizer
 	techLogNormalizer *normalizer.TechLogNormalizer
@@ -72,124 +75,72 @@ func NewClickHouseWriterWithRetry(conn clickhouse.Conn, cfg BatchConfig, retryCf
 	}
 
 	writer := &ClickHouseWriter{
-		conn:          conn,
-		cfg:           cfg,
-		retryCfg:      retryCfg,
-		eventLogBatch: make([]*domain.EventLogRecord, 0, cfg.MaxSize),
-		techLogBatch:  make([]*domain.TechLogRecord, 0, cfg.MaxSize),
-		lastFlush:     time.Now(),
-		maxBatchSize:  maxBatchSize,
+		conn:                         conn,
+		cfg:                          cfg,
+		retryCfg:                     retryCfg,
+		eventLogBatch:                make([]*domain.EventLogRecord, 0, cfg.MaxSize),
+		techLogBatch:                 make([]*domain.TechLogRecord, 0, cfg.MaxSize),
+		lastFlush:                    time.Now(),
+		maxBatchSize:                 maxBatchSize,
 		deduplicationTimeAccumulator: 0,
 		writingTimeAccumulator:       0,
-		deduplicationRecordsCount:   0,
-		writingRecordsCount:         0,
-		normalizer:           normalizer.NewCommentNormalizer(),
-		techLogNormalizer:    normalizer.NewTechLogNormalizer(),
+		deduplicationRecordsCount:    0,
+		writingRecordsCount:          0,
+		normalizer:                   normalizer.NewCommentNormalizer(),
+		techLogNormalizer:            normalizer.NewTechLogNormalizer(),
 	}
-	
+
 	return writer
 }
 
 // WriteEventLog adds an event log record to the batch
 func (w *ClickHouseWriter) WriteEventLog(ctx context.Context, record *domain.EventLogRecord) error {
-	// CRITICAL: Make a copy of the record to avoid race conditions
-	recordCopy := *record
-	
+	w.writeMutex.Lock()
+	defer w.writeMutex.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	recordBytes := recordMemoryBytes(record)
 	w.batchMutex.Lock()
-	
-	// Check if batch is too large (prevent memory leaks)
-	if len(w.eventLogBatch) >= w.maxBatchSize {
-		// Create snapshot for flush
-		batchSnapshot := make([]*domain.EventLogRecord, len(w.eventLogBatch))
-		copy(batchSnapshot, w.eventLogBatch)
-		w.eventLogBatch = w.eventLogBatch[:0]
-		w.lastFlush = time.Now() // Update inside mutex
-		w.batchMutex.Unlock()
-		
-		log.Warn().
-			Int("batch_size", len(batchSnapshot)).
-			Int("max_batch_size", w.maxBatchSize).
-			Msg("Batch size exceeded maximum, forcing flush to prevent memory leak")
-		
-		// Flush snapshot (outside of lock to avoid deadlock)
-		if err := w.flushEventLogSnapshot(ctx, batchSnapshot); err != nil {
-			return fmt.Errorf("forced flush failed: %w", err)
+	flush := len(w.eventLogBatch) > 0 && (len(w.eventLogBatch) >= w.cfg.MaxSize || len(w.eventLogBatch) >= w.maxBatchSize || w.eventLogBytes+recordBytes > maxBatchBytes || time.Since(w.lastFlush).Milliseconds() >= w.cfg.FlushTimeout)
+	w.batchMutex.Unlock()
+	// Ошибка отправки относится к ещё не принятой текущей записи. Старый
+	// батч остаётся ограниченным и повторяется до приёма следующих данных.
+	if flush {
+		if err := w.flushEventLogLocked(ctx); err != nil {
+			return err
 		}
-		
-		// Retry adding the record
-		w.batchMutex.Lock()
 	}
-	
+	recordCopy := *record
+	w.batchMutex.Lock()
 	w.eventLogBatch = append(w.eventLogBatch, &recordCopy)
-	batchSize := len(w.eventLogBatch)
-	shouldFlush := batchSize >= w.cfg.MaxSize || time.Since(w.lastFlush).Milliseconds() >= w.cfg.FlushTimeout
-	
-	if shouldFlush {
-		// CRITICAL: Create a snapshot of the batch to avoid modification during flush
-		batchSnapshot := make([]*domain.EventLogRecord, batchSize)
-		copy(batchSnapshot, w.eventLogBatch)
-		
-		// Clear the original batch before flushing to prevent new records from being added
-		w.eventLogBatch = w.eventLogBatch[:0]
-		w.lastFlush = time.Now() // Update inside mutex
-		w.batchMutex.Unlock()
-		
-		// Flush the snapshot (outside of lock to avoid blocking writes)
-		return w.flushEventLogSnapshot(ctx, batchSnapshot)
-	}
-	
+	w.eventLogBytes += recordBytes
 	w.batchMutex.Unlock()
 	return nil
 }
 
 // WriteTechLog adds a tech log record to the batch
 func (w *ClickHouseWriter) WriteTechLog(ctx context.Context, record *domain.TechLogRecord) error {
-	// CRITICAL: Make a copy of the record to avoid race conditions
-	recordCopy := *record
-
+	w.writeMutex.Lock()
+	defer w.writeMutex.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	recordBytes := recordMemoryBytes(record)
 	w.batchMutex.Lock()
-	
-	// Check if batch is too large (prevent memory leaks)
-	if len(w.techLogBatch) >= w.maxBatchSize {
-		// Create snapshot for flush
-		batchSnapshot := make([]*domain.TechLogRecord, len(w.techLogBatch))
-		copy(batchSnapshot, w.techLogBatch)
-		w.techLogBatch = w.techLogBatch[:0]
-		w.lastFlush = time.Now() // Update inside mutex
-		w.batchMutex.Unlock()
-		
-		log.Warn().
-			Int("batch_size", len(batchSnapshot)).
-			Int("max_batch_size", w.maxBatchSize).
-			Msg("Batch size exceeded maximum, forcing flush to prevent memory leak")
-		
-		// Flush snapshot (outside of lock to avoid deadlock)
-		if err := w.flushTechLogSnapshot(ctx, batchSnapshot); err != nil {
-			return fmt.Errorf("forced flush failed: %w", err)
+	flush := len(w.techLogBatch) > 0 && (len(w.techLogBatch) >= w.cfg.MaxSize || len(w.techLogBatch) >= w.maxBatchSize || w.techLogBytes+recordBytes > maxBatchBytes || time.Since(w.lastFlush).Milliseconds() >= w.cfg.FlushTimeout)
+	w.batchMutex.Unlock()
+	// Ошибка отправки относится к ещё не принятой текущей записи. Старый
+	// батч остаётся ограниченным и повторяется до приёма следующих данных.
+	if flush {
+		if err := w.flushTechLogLocked(ctx); err != nil {
+			return err
 		}
-		
-		// Retry adding the record
-		w.batchMutex.Lock()
 	}
-	
+	recordCopy := *record
+	w.batchMutex.Lock()
 	w.techLogBatch = append(w.techLogBatch, &recordCopy)
-	batchSize := len(w.techLogBatch)
-	shouldFlush := batchSize >= w.cfg.MaxSize || time.Since(w.lastFlush).Milliseconds() >= w.cfg.FlushTimeout
-
-	if shouldFlush {
-		// CRITICAL: Create a snapshot of the batch to avoid modification during flush
-		batchSnapshot := make([]*domain.TechLogRecord, batchSize)
-		copy(batchSnapshot, w.techLogBatch)
-
-		// Clear the original batch before flushing to prevent new records from being added
-		w.techLogBatch = w.techLogBatch[:0]
-		w.lastFlush = time.Now() // Update inside mutex
-		w.batchMutex.Unlock()
-
-		// Flush the snapshot (outside of lock to avoid blocking writes)
-		return w.flushTechLogSnapshot(ctx, batchSnapshot)
-	}
-
+	w.techLogBytes += recordBytes
 	w.batchMutex.Unlock()
 	return nil
 }
@@ -211,15 +162,15 @@ func (w *ClickHouseWriter) WriteParserMetrics(ctx context.Context, metrics *doma
 	// This allows metrics from reader (which doesn't have deduplication/writing times) to be enriched
 	// Works for both event_log and tech_log parsers
 	w.metricsMutex.Lock()
-	
+
 	// Save accumulated metrics to local variables before unlocking
 	writingRecordsCount := w.writingRecordsCount
 	writingTimeAccumulator := w.writingTimeAccumulator
 	deduplicationRecordsCount := w.deduplicationRecordsCount
 	deduplicationTimeAccumulator := w.deduplicationTimeAccumulator
-	
+
 	w.metricsMutex.Unlock()
-	
+
 	// Enrich DeduplicationTimeMs if not set and deduplication is enabled
 	// CRITICAL: Use current accumulated metrics at the time of WriteParserMetrics call
 	// This ensures we use metrics that have been accumulated up to this point
@@ -240,7 +191,7 @@ func (w *ClickHouseWriter) WriteParserMetrics(ctx context.Context, metrics *doma
 			Int64("calculated_dedup_time_ns", calculatedDedupTimeNs).
 			Uint64("calculated_dedup_time_ms", calculatedDedupTime).
 			Msg("Enriching DeduplicationTimeMs from accumulated metrics")
-		
+
 		if calculatedDedupTime == 0 && metrics.RecordsParsed > 0 {
 			// For very small deduplication times, use minimum 1ms to avoid zero
 			metrics.DeduplicationTimeMs = 1
@@ -248,7 +199,7 @@ func (w *ClickHouseWriter) WriteParserMetrics(ctx context.Context, metrics *doma
 			metrics.DeduplicationTimeMs = calculatedDedupTime
 		}
 	}
-	
+
 	// Enrich WritingTimeMs if not set and we have accumulated writing metrics
 	// CRITICAL: Use current accumulated metrics at the time of WriteParserMetrics call
 	// This ensures we use metrics that have been accumulated up to this point
@@ -260,7 +211,7 @@ func (w *ClickHouseWriter) WriteParserMetrics(ctx context.Context, metrics *doma
 			avgWritingTimePerRecordNs := writingTimeAccumulator.Nanoseconds() / int64(writingRecordsCount)
 			calculatedWritingTimeNs := avgWritingTimePerRecordNs * int64(metrics.RecordsParsed)
 			calculatedWritingTime := uint64(calculatedWritingTimeNs / 1_000_000) // Convert nanoseconds to milliseconds
-			
+
 			log.Info().
 				Str("file_path", metrics.FilePath).
 				Uint64("writing_records_count", writingRecordsCount).
@@ -317,7 +268,7 @@ func (w *ClickHouseWriter) WriteParserMetrics(ctx context.Context, metrics *doma
 			}
 		}
 	}
-	
+
 	// Enrich FileReadingTimeMs if not set or if it's a minimal placeholder value (1ms)
 	// Calculate from ParsingTimeMs and RecordParsingTimeMs if available
 	// CRITICAL: Always enrich if FileReadingTimeMs is 0 or 1 (minimal placeholder)
@@ -340,7 +291,7 @@ func (w *ClickHouseWriter) WriteParserMetrics(ctx context.Context, metrics *doma
 			}
 		}
 	}
-	
+
 	// CRITICAL: Verify time coverage - check that all times cover the entire process
 	// Total time should be: FileReadingTimeMs + RecordParsingTimeMs + DeduplicationTimeMs + WritingTimeMs
 	// But in streaming mode, FileReadingTimeMs and RecordParsingTimeMs overlap, so:
@@ -349,7 +300,7 @@ func (w *ClickHouseWriter) WriteParserMetrics(ctx context.Context, metrics *doma
 	// OR Total process time = max(ParsingTimeMs, DeduplicationTimeMs + WritingTimeMs) (if parallel)
 	calculatedTotalTime := metrics.FileReadingTimeMs + metrics.RecordParsingTimeMs + metrics.DeduplicationTimeMs + metrics.WritingTimeMs
 	parsingBasedTotalTime := metrics.ParsingTimeMs + metrics.DeduplicationTimeMs + metrics.WritingTimeMs
-	
+
 	// Log time coverage analysis
 	log.Info().
 		Str("file_path", metrics.FilePath).
@@ -360,9 +311,9 @@ func (w *ClickHouseWriter) WriteParserMetrics(ctx context.Context, metrics *doma
 		Uint64("writing_time_ms", metrics.WritingTimeMs).
 		Uint64("calculated_total_time", calculatedTotalTime).
 		Uint64("parsing_based_total_time", parsingBasedTotalTime).
-		Int64("time_coverage_diff", int64(calculatedTotalTime) - int64(parsingBasedTotalTime)).
+		Int64("time_coverage_diff", int64(calculatedTotalTime)-int64(parsingBasedTotalTime)).
 		Msg("Time coverage analysis - verifying all times cover the entire process")
-	
+
 	// Warn if times don't make sense
 	if metrics.ParsingTimeMs > 0 && calculatedTotalTime < metrics.ParsingTimeMs {
 		log.Warn().
@@ -371,11 +322,11 @@ func (w *ClickHouseWriter) WriteParserMetrics(ctx context.Context, metrics *doma
 			Uint64("calculated_total_time", calculatedTotalTime).
 			Msg("WARNING: Calculated total time is less than parsing time - times may not cover the entire process")
 	}
-	
+
 	// In streaming mode, FileReadingTimeMs and RecordParsingTimeMs overlap
 	// So FileReadingTimeMs + RecordParsingTimeMs can be > ParsingTimeMs
 	// This is expected and correct
-	if metrics.FileReadingTimeMs + metrics.RecordParsingTimeMs > metrics.ParsingTimeMs && metrics.ParsingTimeMs > 0 {
+	if metrics.FileReadingTimeMs+metrics.RecordParsingTimeMs > metrics.ParsingTimeMs && metrics.ParsingTimeMs > 0 {
 		log.Debug().
 			Str("file_path", metrics.FilePath).
 			Uint64("file_reading_time_ms", metrics.FileReadingTimeMs).
@@ -383,7 +334,7 @@ func (w *ClickHouseWriter) WriteParserMetrics(ctx context.Context, metrics *doma
 			Uint64("parsing_time_ms", metrics.ParsingTimeMs).
 			Msg("FileReadingTimeMs + RecordParsingTimeMs > ParsingTimeMs (expected in streaming mode - times overlap)")
 	}
-	
+
 	batch, err := w.conn.PrepareBatch(ctx, `INSERT INTO logs.parser_metrics (
 		timestamp, parser_type, cluster_guid, cluster_name, infobase_guid, infobase_name,
 		file_path, file_name, files_processed, records_parsed, parsing_time_ms, records_per_second,
@@ -393,7 +344,7 @@ func (w *ClickHouseWriter) WriteParserMetrics(ctx context.Context, metrics *doma
 	if err != nil {
 		return fmt.Errorf("failed to prepare batch: %w", err)
 	}
-	
+
 	err = batch.Append(
 		metrics.Timestamp,
 		metrics.ParserType,
@@ -419,21 +370,21 @@ func (w *ClickHouseWriter) WriteParserMetrics(ctx context.Context, metrics *doma
 	if err != nil {
 		return fmt.Errorf("failed to append to batch: %w", err)
 	}
-	
+
 	// Send batch with retry logic
 	if err := retry.Do(ctx, w.retryCfg, func() error {
 		return batch.Send()
 	}); err != nil {
 		return fmt.Errorf("failed to send batch: %w", err)
 	}
-	
+
 	log.Debug().
 		Str("parser_type", metrics.ParserType).
 		Uint32("files_processed", metrics.FilesProcessed).
 		Uint64("records_parsed", metrics.RecordsParsed).
 		Float64("records_per_second", metrics.RecordsPerSecond).
 		Msg("Parser metrics written to ClickHouse")
-	
+
 	return nil
 }
 
@@ -450,12 +401,12 @@ func (w *ClickHouseWriter) WriteFileReadingProgress(ctx context.Context, progres
 	if progress.FileSizeBytes > 0 {
 		progressPercent = float64(progress.OffsetBytes) / float64(progress.FileSizeBytes) * 100.0
 	}
-	
+
 	batch, err := w.conn.PrepareBatch(ctx, "INSERT INTO logs.file_reading_progress")
 	if err != nil {
 		return fmt.Errorf("failed to prepare batch: %w", err)
 	}
-	
+
 	err = batch.Append(
 		progress.Timestamp,
 		progress.ParserType,
@@ -475,14 +426,14 @@ func (w *ClickHouseWriter) WriteFileReadingProgress(ctx context.Context, progres
 	if err != nil {
 		return fmt.Errorf("failed to append to batch: %w", err)
 	}
-	
+
 	// Send batch with retry logic
 	if err := retry.Do(ctx, w.retryCfg, func() error {
 		return batch.Send()
 	}); err != nil {
 		return fmt.Errorf("failed to send batch: %w", err)
 	}
-	
+
 	log.Debug().
 		Str("parser_type", progress.ParserType).
 		Str("file_name", progress.FileName).
@@ -490,7 +441,7 @@ func (w *ClickHouseWriter) WriteFileReadingProgress(ctx context.Context, progres
 		Uint64("file_size_bytes", progress.FileSizeBytes).
 		Float64("progress_percent", progressPercent).
 		Msg("File reading progress written to ClickHouse")
-	
+
 	return nil
 }
 
@@ -498,32 +449,40 @@ func (w *ClickHouseWriter) WriteFileReadingProgress(ctx context.Context, progres
 func (w *ClickHouseWriter) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	
+
 	// Flush pending records
 	if err := w.Flush(ctx); err != nil {
 		log.Error().Err(err).Msg("Error flushing during close")
 	}
-	
+
 	return nil
 }
 
 // flushEventLog writes event log batch to ClickHouse with deduplication
 func (w *ClickHouseWriter) flushEventLog(ctx context.Context) error {
+	w.writeMutex.Lock()
+	defer w.writeMutex.Unlock()
+	return w.flushEventLogLocked(ctx)
+}
+
+// writeMutex удерживает batch неизменным на время отправки и повторов.
+func (w *ClickHouseWriter) flushEventLogLocked(ctx context.Context) error {
 	w.batchMutex.Lock()
-	if len(w.eventLogBatch) == 0 {
-		w.batchMutex.Unlock()
+	batch := w.eventLogBatch
+	w.batchMutex.Unlock()
+	if len(batch) == 0 {
 		return nil
 	}
-	
-	// CRITICAL: Create a snapshot to avoid modification during processing
-	batchSnapshot := make([]*domain.EventLogRecord, len(w.eventLogBatch))
-	copy(batchSnapshot, w.eventLogBatch)
-	
-	// Clear the original batch
+	if err := w.flushEventLogSnapshot(ctx, batch); err != nil {
+		return err
+	}
+	w.batchMutex.Lock()
+	clear(w.eventLogBatch)
 	w.eventLogBatch = w.eventLogBatch[:0]
+	w.eventLogBytes = 0
+	w.lastFlush = time.Now()
 	w.batchMutex.Unlock()
-	
-	return w.flushEventLogSnapshot(ctx, batchSnapshot)
+	return nil
 }
 
 // flushEventLogSnapshot processes a snapshot of the batch (thread-safe)
@@ -537,29 +496,29 @@ func (w *ClickHouseWriter) flushEventLogSnapshot(ctx context.Context, batchSnaps
 	if len(batchSnapshot) == 0 {
 		return nil
 	}
-	
+
 	// Log batch start
 	log.Debug().
 		Int("batch_size", len(batchSnapshot)).
 		Msg("Starting to process event log batch snapshot")
-	
+
 	// Calculate hashes for all records first
 	// Use map to track unique hashes and their records (handle duplicates within batch)
 	hashToRecords := make(map[string][]*domain.EventLogRecord, len(batchSnapshot))
 	hashOrder := make([]string, 0, len(batchSnapshot)) // Preserve order for processing
-	
+
 	skippedCount := 0
 	skippedReasons := make(map[string]int)
 	skippedRecords := make([]map[string]interface{}, 0)
 	processedCount := 0
-	
+
 	// CRITICAL: Store batch size at start
 	initialBatchSize := len(batchSnapshot)
-	
+
 	// Step 1: Calculate all hashes and group by hash (handle duplicates within batch)
 	for idx, record := range batchSnapshot {
 		processedCount++
-		
+
 		// CRITICAL: Verify batch snapshot hasn't changed (should never happen, but check anyway)
 		if len(batchSnapshot) != initialBatchSize {
 			log.Error().
@@ -568,21 +527,21 @@ func (w *ClickHouseWriter) flushEventLogSnapshot(ctx context.Context, batchSnaps
 				Int("record_index", idx).
 				Msg("CRITICAL: Batch snapshot size changed - this should never happen!")
 		}
-		
+
 		hash, err := calculateEventLogHash(record)
 		if err != nil {
 			skippedCount++
 			skippedReasons["hash_calculation_failed"]++
 			skippedInfo := map[string]interface{}{
-				"index":           idx,
-				"reason":          "hash_calculation_failed",
-				"error":           err.Error(),
-				"event_time":      record.EventTime.Format("2006-01-02 15:04:05"),
+				"index":                idx,
+				"reason":               "hash_calculation_failed",
+				"error":                err.Error(),
+				"event_time":           record.EventTime.Format("2006-01-02 15:04:05"),
 				"transaction_datetime": record.TransactionDateTime.Format("2006-01-02 15:04:05"),
-				"event":           record.Event,
-				"level":           record.Level,
-				"cluster_guid":    record.ClusterGUID,
-				"infobase_guid":   record.InfobaseGUID,
+				"event":                record.Event,
+				"level":                record.Level,
+				"cluster_guid":         record.ClusterGUID,
+				"infobase_guid":        record.InfobaseGUID,
 			}
 			skippedRecords = append(skippedRecords, skippedInfo)
 			log.Error().
@@ -597,7 +556,7 @@ func (w *ClickHouseWriter) flushEventLogSnapshot(ctx context.Context, batchSnaps
 				Msg("CRITICAL: Failed to calculate hash, skipping record - RECORD WILL BE LOST")
 			continue
 		}
-		
+
 		// Add record to hash group (handle duplicates within batch)
 		if _, exists := hashToRecords[hash]; !exists {
 			hashOrder = append(hashOrder, hash)
@@ -605,19 +564,19 @@ func (w *ClickHouseWriter) flushEventLogSnapshot(ctx context.Context, batchSnaps
 		}
 		hashToRecords[hash] = append(hashToRecords[hash], record)
 	}
-	
+
 	// Get unique hashes for batch check
 	recordHashes := hashOrder
-	
+
 	// Step 2: Batch check all hashes at once (if deduplication is enabled)
 	var deduplicationTime time.Duration
 	existingHashes := make(map[string]bool, len(recordHashes))
-	
+
 	if w.cfg.EnableDeduplication && len(recordHashes) > 0 {
 		dedupCheckStart := time.Now()
 		existing, err := w.checkHashesBatch(ctx, "event_log", recordHashes)
 		deduplicationTime = time.Since(dedupCheckStart)
-		
+
 		if err != nil {
 			log.Warn().Err(err).Int("hashes_count", len(recordHashes)).Msg("Failed to batch check hashes, will try to insert all records")
 			// Continue with insert - if duplicates exist, ClickHouse will handle them
@@ -628,14 +587,14 @@ func (w *ClickHouseWriter) flushEventLogSnapshot(ctx context.Context, batchSnaps
 			}
 		}
 	}
-	
+
 	// Step 3: Filter records based on deduplication results
 	recordsToWrite := make([]*domain.EventLogRecord, 0, len(batchSnapshot))
 	hashes := make([]string, 0, len(batchSnapshot))
-	
+
 	for _, hash := range recordHashes {
 		records := hashToRecords[hash]
-		
+
 		// Check if hash already exists in ClickHouse (deduplication)
 		if w.cfg.EnableDeduplication && existingHashes[hash] {
 			// All records with this hash are duplicates - skip all
@@ -643,12 +602,12 @@ func (w *ClickHouseWriter) flushEventLogSnapshot(ctx context.Context, batchSnaps
 				skippedCount++
 				skippedReasons["duplicate"]++
 				skippedInfo := map[string]interface{}{
-					"reason":          "duplicate",
-					"hash":            hash,
-					"event_time":      record.EventTime.Format("2006-01-02 15:04:05"),
+					"reason":               "duplicate",
+					"hash":                 hash,
+					"event_time":           record.EventTime.Format("2006-01-02 15:04:05"),
 					"transaction_datetime": record.TransactionDateTime.Format("2006-01-02 15:04:05"),
-					"event":           record.Event,
-					"level":           record.Level,
+					"event":                record.Event,
+					"level":                record.Level,
 				}
 				skippedRecords = append(skippedRecords, skippedInfo)
 				log.Debug().
@@ -659,7 +618,7 @@ func (w *ClickHouseWriter) flushEventLogSnapshot(ctx context.Context, batchSnaps
 			}
 			continue
 		}
-		
+
 		// Hash doesn't exist in ClickHouse - add all records with this hash
 		// If there are duplicates within batch (same hash), add only first one
 		// (duplicates within batch are also considered duplicates)
@@ -685,21 +644,21 @@ func (w *ClickHouseWriter) flushEventLogSnapshot(ctx context.Context, batchSnaps
 				Str("first_comment", firstRecord.Comment).
 				Str("first_data", firstRecord.Data).
 				Msg("CRITICAL: Found duplicate records in batch - comparing details")
-			
+
 			for i := 1; i < len(records); i++ {
 				dupRecord := records[i]
 				skippedCount++
 				skippedReasons["duplicate_in_batch"]++
 				skippedInfo := map[string]interface{}{
-					"reason":          "duplicate_in_batch",
-					"hash":            hash,
-					"event_time":      dupRecord.EventTime.Format("2006-01-02 15:04:05"),
+					"reason":               "duplicate_in_batch",
+					"hash":                 hash,
+					"event_time":           dupRecord.EventTime.Format("2006-01-02 15:04:05"),
 					"transaction_datetime": dupRecord.TransactionDateTime.Format("2006-01-02 15:04:05"),
-					"event":           dupRecord.Event,
-					"level":           dupRecord.Level,
+					"event":                dupRecord.Event,
+					"level":                dupRecord.Level,
 				}
 				skippedRecords = append(skippedRecords, skippedInfo)
-				
+
 				// Detailed comparison log
 				log.Warn().
 					Str("hash", hash).
@@ -732,12 +691,12 @@ func (w *ClickHouseWriter) flushEventLogSnapshot(ctx context.Context, batchSnaps
 					Msg("CRITICAL: Duplicate record details - all hash fields")
 			}
 		}
-		
+
 		// Add first record with this hash (or only record if no duplicates in batch)
 		record := records[0]
 		recordsToWrite = append(recordsToWrite, record)
 		hashes = append(hashes, hash)
-		
+
 		// Log every 50th record for debugging
 		if len(recordsToWrite)%50 == 0 {
 			log.Debug().
@@ -749,10 +708,10 @@ func (w *ClickHouseWriter) flushEventLogSnapshot(ctx context.Context, batchSnaps
 				Msg("Progress: adding record to batch")
 		}
 	}
-	
+
 	// Calculate processing time
 	processingTime := time.Since(startTime)
-	
+
 	// Log batch processing summary
 	finalBatchSize := len(batchSnapshot)
 	log.Debug().
@@ -765,7 +724,7 @@ func (w *ClickHouseWriter) flushEventLogSnapshot(ctx context.Context, batchSnaps
 		Dur("processing_time_ms", processingTime).
 		Float64("records_per_second", float64(processedCount)/processingTime.Seconds()).
 		Msg("Batch processing complete")
-	
+
 	// CRITICAL: Verify all records were processed
 	if processedCount != initialBatchSize {
 		log.Error().
@@ -774,13 +733,13 @@ func (w *ClickHouseWriter) flushEventLogSnapshot(ctx context.Context, batchSnaps
 			Int("difference", initialBatchSize-processedCount).
 			Msg("CRITICAL: Not all records were processed in the loop - RECORDS WILL BE LOST!")
 	}
-	
+
 	// Log skipped records summary with details
 	if skippedCount > 0 {
 		// If all skipped records are duplicates in batch, log as info (this is normal behavior)
 		// Otherwise, log as error (unexpected skip reasons)
 		onlyDuplicatesInBatch := len(skippedReasons) == 1 && skippedReasons["duplicate_in_batch"] == skippedCount
-		
+
 		if onlyDuplicatesInBatch {
 			log.Info().
 				Int("skipped_count", skippedCount).
@@ -795,7 +754,7 @@ func (w *ClickHouseWriter) flushEventLogSnapshot(ctx context.Context, batchSnaps
 				Msg("CRITICAL: Some records were skipped and will not be written to ClickHouse")
 		}
 	}
-	
+
 	// CRITICAL: Check if there's a discrepancy
 	if finalBatchSize != len(recordsToWrite) && skippedCount == 0 {
 		log.Error().
@@ -806,7 +765,7 @@ func (w *ClickHouseWriter) flushEventLogSnapshot(ctx context.Context, batchSnaps
 			Int("skipped_count", skippedCount).
 			Msg("CRITICAL: Records are missing but skippedCount is 0 - INVESTIGATE!")
 	}
-	
+
 	// CRITICAL: Final verification - all records must be accounted for
 	if processedCount != len(recordsToWrite)+skippedCount {
 		log.Error().
@@ -817,7 +776,7 @@ func (w *ClickHouseWriter) flushEventLogSnapshot(ctx context.Context, batchSnaps
 			Int("difference", processedCount-(len(recordsToWrite)+skippedCount)).
 			Msg("CRITICAL: Record count mismatch - some records are unaccounted for!")
 	}
-	
+
 	if len(recordsToWrite) == 0 {
 		if w.cfg.EnableDeduplication {
 			log.Debug().Int("total", len(batchSnapshot)).Msg("All event log records were duplicates, skipping batch")
@@ -834,7 +793,7 @@ func (w *ClickHouseWriter) flushEventLogSnapshot(ctx context.Context, batchSnaps
 		}
 		return nil
 	}
-	
+
 	// Normalize comments for error records synchronously before writing
 	// Note: Level is stored in Russian ("Ошибка") in 1C Event Log
 	normalizedComments := make([]string, len(recordsToWrite))
@@ -845,10 +804,10 @@ func (w *ClickHouseWriter) flushEventLogSnapshot(ctx context.Context, batchSnaps
 			normalizedComments[i] = ""
 		}
 	}
-	
+
 	// Measure writing time separately
 	writingStartTime := time.Now()
-	
+
 	batch, err := w.conn.PrepareBatch(ctx, `INSERT INTO logs.event_log (
 		event_time, cluster_guid, cluster_name, infobase_guid, infobase_name,
 		level, event, event_presentation, user_name, user_id, computer,
@@ -861,10 +820,10 @@ func (w *ClickHouseWriter) flushEventLogSnapshot(ctx context.Context, batchSnaps
 	if err != nil {
 		return fmt.Errorf("failed to prepare batch: %w", err)
 	}
-	
+
 	for i, record := range recordsToWrite {
 		propKeys, propVals := mapToArrays(record.Properties)
-		
+
 		err := batch.Append(
 			record.EventTime,
 			record.ClusterGUID,
@@ -897,7 +856,7 @@ func (w *ClickHouseWriter) flushEventLogSnapshot(ctx context.Context, batchSnaps
 			record.SecondaryPort,
 			propKeys,
 			propVals,
-			hashes[i], // record_hash
+			hashes[i],             // record_hash
 			normalizedComments[i], // comment_normalized - normalized synchronously
 		)
 		if err != nil {
@@ -914,11 +873,11 @@ func (w *ClickHouseWriter) flushEventLogSnapshot(ctx context.Context, batchSnaps
 				Uint64("connection_id", record.ConnectionID).
 				Str("hash", hashes[i]).
 				Msg("CRITICAL: Failed to append record to batch - RECORD WILL BE LOST")
-			return fmt.Errorf("failed to append to batch (record index %d, event_time=%s, transaction_datetime=%s): %w", 
+			return fmt.Errorf("failed to append to batch (record index %d, event_time=%s, transaction_datetime=%s): %w",
 				i, record.EventTime.Format("2006-01-02 15:04:05"), record.TransactionDateTime.Format("2006-01-02 15:04:05"), err)
 		}
 	}
-	
+
 	// Send batch with retry logic
 	if err := retry.Do(ctx, w.retryCfg, func() error {
 		return batch.Send()
@@ -931,23 +890,23 @@ func (w *ClickHouseWriter) flushEventLogSnapshot(ctx context.Context, batchSnaps
 			Msg("CRITICAL: Failed to send batch to ClickHouse after retries - ALL RECORDS IN BATCH WILL BE LOST")
 		return fmt.Errorf("failed to send batch (total=%d, to_write=%d): %w", len(w.eventLogBatch), len(recordsToWrite), err)
 	}
-	
+
 	// Calculate times
 	writingTime := time.Since(writingStartTime)
 	totalTime := time.Since(startTime)
 	deduplicationTimeMs := uint64(deduplicationTime.Milliseconds())
 	writingTimeMs := uint64(writingTime.Milliseconds())
-	
+
 	// Accumulate metrics for reporting (thread-safe)
 	w.metricsMutex.Lock()
 	oldWritingRecordsCount := w.writingRecordsCount
 	oldWritingTimeAccumulator := w.writingTimeAccumulator
-	
+
 	w.deduplicationTimeAccumulator += deduplicationTime
 	w.writingTimeAccumulator += writingTime
 	w.deduplicationRecordsCount += uint64(len(batchSnapshot))
 	w.writingRecordsCount += uint64(len(recordsToWrite))
-	
+
 	// Log metrics accumulation for debugging
 	log.Info().
 		Int("records_written", len(recordsToWrite)).
@@ -958,9 +917,9 @@ func (w *ClickHouseWriter) flushEventLogSnapshot(ctx context.Context, batchSnaps
 		Dur("new_writing_time_accumulator", w.writingTimeAccumulator).
 		Dur("added_writing_time", writingTime).
 		Msg("Accumulated writing metrics (event_log)")
-	
+
 	w.metricsMutex.Unlock()
-	
+
 	logEntry := log.Info().
 		Int("total", len(batchSnapshot)).
 		Int("written", len(recordsToWrite)).
@@ -996,30 +955,39 @@ func (w *ClickHouseWriter) flushEventLogSnapshot(ctx context.Context, batchSnaps
 		logEntry = logEntry.Int("skipped", len(batchSnapshot)-len(recordsToWrite))
 	}
 	logEntry.Msg("Flushed event log batch to ClickHouse")
-	
+
+	w.batchMutex.Lock()
 	w.lastFlush = time.Now()
-	
+	w.batchMutex.Unlock()
+
 	return nil
 }
 
 // flushTechLog writes tech log batch to ClickHouse with deduplication
 func (w *ClickHouseWriter) flushTechLog(ctx context.Context) error {
+	w.writeMutex.Lock()
+	defer w.writeMutex.Unlock()
+	return w.flushTechLogLocked(ctx)
+}
+
+// writeMutex удерживает batch неизменным на время отправки и повторов.
+func (w *ClickHouseWriter) flushTechLogLocked(ctx context.Context) error {
 	w.batchMutex.Lock()
-	if len(w.techLogBatch) == 0 {
-		w.batchMutex.Unlock()
+	batch := w.techLogBatch
+	w.batchMutex.Unlock()
+	if len(batch) == 0 {
 		return nil
 	}
-
-	// CRITICAL: Create a snapshot to avoid modification during processing
-	batchSnapshot := make([]*domain.TechLogRecord, len(w.techLogBatch))
-	copy(batchSnapshot, w.techLogBatch)
-
-	// Clear the original batch
+	if err := w.flushTechLogSnapshot(ctx, batch); err != nil {
+		return err
+	}
+	w.batchMutex.Lock()
+	clear(w.techLogBatch)
 	w.techLogBatch = w.techLogBatch[:0]
-	w.lastFlush = time.Now() // Update inside mutex
+	w.techLogBytes = 0
+	w.lastFlush = time.Now()
 	w.batchMutex.Unlock()
-	
-	return w.flushTechLogSnapshot(ctx, batchSnapshot)
+	return nil
 }
 
 // flushTechLogSnapshot processes a snapshot of the batch (thread-safe)
@@ -1027,7 +995,7 @@ func (w *ClickHouseWriter) flushTechLogSnapshot(ctx context.Context, batchSnapsh
 	if len(batchSnapshot) == 0 {
 		return nil
 	}
-	
+
 	// Start timing
 	startTime := time.Now()
 	defer func() {
@@ -1040,7 +1008,7 @@ func (w *ClickHouseWriter) flushTechLogSnapshot(ctx context.Context, batchSnapsh
 	// Use map to track unique hashes and their records (handle duplicates within batch)
 	hashToRecords := make(map[string][]*domain.TechLogRecord, len(batchSnapshot))
 	hashOrder := make([]string, 0, len(batchSnapshot)) // Preserve order for processing
-	
+
 	// Step 1: Calculate all hashes and group by hash (handle duplicates within batch)
 	for _, record := range batchSnapshot {
 		hash, err := calculateTechLogHash(record)
@@ -1048,7 +1016,7 @@ func (w *ClickHouseWriter) flushTechLogSnapshot(ctx context.Context, batchSnapsh
 			log.Warn().Err(err).Msg("Failed to calculate hash, skipping record")
 			continue
 		}
-		
+
 		// Add record to hash group (handle duplicates within batch)
 		if _, exists := hashToRecords[hash]; !exists {
 			hashOrder = append(hashOrder, hash)
@@ -1056,19 +1024,19 @@ func (w *ClickHouseWriter) flushTechLogSnapshot(ctx context.Context, batchSnapsh
 		}
 		hashToRecords[hash] = append(hashToRecords[hash], record)
 	}
-	
+
 	// Get unique hashes for batch check
 	recordHashes := hashOrder
-	
+
 	// Step 2: Batch check all hashes at once (if deduplication is enabled)
 	var deduplicationTime time.Duration
 	existingHashes := make(map[string]bool, len(recordHashes))
-	
+
 	if w.cfg.EnableDeduplication && len(recordHashes) > 0 {
 		dedupCheckStart := time.Now()
 		existing, err := w.checkHashesBatch(ctx, "tech_log", recordHashes)
 		deduplicationTime = time.Since(dedupCheckStart)
-		
+
 		if err != nil {
 			log.Warn().Err(err).Int("hashes_count", len(recordHashes)).Msg("Failed to batch check hashes, will try to insert all records")
 			// Continue with insert - if duplicates exist, ClickHouse will handle them
@@ -1079,14 +1047,14 @@ func (w *ClickHouseWriter) flushTechLogSnapshot(ctx context.Context, batchSnapsh
 			}
 		}
 	}
-	
+
 	// Step 3: Filter records based on deduplication results
 	recordsToWrite := make([]*domain.TechLogRecord, 0, len(batchSnapshot))
 	hashes := make([]string, 0, len(batchSnapshot))
-	
+
 	for _, hash := range recordHashes {
 		records := hashToRecords[hash]
-		
+
 		// Check if hash already exists in ClickHouse (deduplication)
 		if w.cfg.EnableDeduplication && existingHashes[hash] {
 			// All records with this hash are duplicates - skip all
@@ -1096,7 +1064,7 @@ func (w *ClickHouseWriter) flushTechLogSnapshot(ctx context.Context, batchSnapsh
 				Msg("Skipping duplicate tech log records")
 			continue
 		}
-		
+
 		// Hash doesn't exist in ClickHouse - add all records with this hash
 		// If there are duplicates within batch (same hash), add only first one
 		// (duplicates within batch are also considered duplicates)
@@ -1109,13 +1077,13 @@ func (w *ClickHouseWriter) flushTechLogSnapshot(ctx context.Context, batchSnapsh
 					Msg("Skipping duplicate tech log record within batch")
 			}
 		}
-		
+
 		// Add first record with this hash (or only record if no duplicates in batch)
 		record := records[0]
 		recordsToWrite = append(recordsToWrite, record)
 		hashes = append(hashes, hash)
 	}
-	
+
 	if len(recordsToWrite) == 0 {
 		if w.cfg.EnableDeduplication {
 			log.Debug().Int("total", len(batchSnapshot)).Msg("All tech log records were duplicates, skipping batch")
@@ -1129,7 +1097,7 @@ func (w *ClickHouseWriter) flushTechLogSnapshot(ctx context.Context, batchSnapsh
 		}
 		return nil
 	}
-	
+
 	// Normalize raw_line for all records synchronously before writing
 	normalizedRawLines := make([]string, len(recordsToWrite))
 	for i, record := range recordsToWrite {
@@ -1139,18 +1107,18 @@ func (w *ClickHouseWriter) flushTechLogSnapshot(ctx context.Context, batchSnapsh
 			normalizedRawLines[i] = ""
 		}
 	}
-	
+
 	// Measure writing time separately
 	writingStartTime := time.Now()
-	
+
 	batch, err := w.conn.PrepareBatch(ctx, "INSERT INTO logs.tech_log")
 	if err != nil {
 		return fmt.Errorf("failed to prepare batch: %w", err)
 	}
-	
+
 	for i, record := range recordsToWrite {
 		propKeys, propVals := mapToArrays(record.Properties)
-		
+
 		err := batch.Append(
 			// Core fields
 			record.Timestamp,
@@ -1454,27 +1422,27 @@ func (w *ClickHouseWriter) flushTechLogSnapshot(ctx context.Context, batchSnapsh
 			// Dynamic properties
 			propKeys,
 			propVals,
-			hashes[i], // record_hash
+			hashes[i],             // record_hash
 			normalizedRawLines[i], // raw_line_normalized - normalized synchronously
 		)
-	if err != nil {
-		return fmt.Errorf("failed to append to batch: %w", err)
+		if err != nil {
+			return fmt.Errorf("failed to append to batch: %w", err)
+		}
 	}
-}
 
-// Send batch with retry logic
-if err := retry.Do(ctx, w.retryCfg, func() error {
-	return batch.Send()
-}); err != nil {
-	return fmt.Errorf("failed to send batch: %w", err)
-}
-	
+	// Send batch with retry logic
+	if err := retry.Do(ctx, w.retryCfg, func() error {
+		return batch.Send()
+	}); err != nil {
+		return fmt.Errorf("failed to send batch: %w", err)
+	}
+
 	// Calculate times
 	writingTime := time.Since(writingStartTime)
 	totalTime := time.Since(startTime)
 	deduplicationTimeMs := uint64(deduplicationTime.Milliseconds())
 	writingTimeMs := uint64(writingTime.Milliseconds())
-	
+
 	// Accumulate metrics for reporting (thread-safe)
 	w.metricsMutex.Lock()
 	w.deduplicationTimeAccumulator += deduplicationTime
@@ -1482,7 +1450,7 @@ if err := retry.Do(ctx, w.retryCfg, func() error {
 	w.deduplicationRecordsCount += uint64(len(batchSnapshot))
 	w.writingRecordsCount += uint64(len(recordsToWrite))
 	w.metricsMutex.Unlock()
-	
+
 	logEntry := log.Info().
 		Int("total", len(batchSnapshot)).
 		Int("written", len(recordsToWrite)).
@@ -1527,21 +1495,21 @@ func (w *ClickHouseWriter) checkHashExists(ctx context.Context, tableName, hash 
 	// ClickHouse uses {hash:String} syntax for parameters, but for simplicity we'll use direct substitution
 	// Hash is already hex-encoded, so it's safe to use in query
 	query := fmt.Sprintf("SELECT count() FROM logs.%s WHERE record_hash = '%s' LIMIT 1", tableName, hash)
-	
+
 	rows, err := w.conn.Query(ctx, query)
 	if err != nil {
 		return false, fmt.Errorf("failed to check hash: %w", err)
 	}
 	defer rows.Close()
-	
+
 	if !rows.Next() {
 		return false, nil
 	}
-	
+
 	if err := rows.Scan(&count); err != nil {
 		return false, fmt.Errorf("failed to scan count: %w", err)
 	}
-	
+
 	return count > 0, nil
 }
 
@@ -1551,20 +1519,20 @@ func (w *ClickHouseWriter) checkHashesBatch(ctx context.Context, tableName strin
 	if len(hashes) == 0 {
 		return []string{}, nil
 	}
-	
+
 	// Build IN clause with escaped hashes
 	// ClickHouse supports up to 10,000 values in IN clause, but we'll use batches of 1000 for safety
 	const batchSize = 1000
 	existingHashes := make([]string, 0, len(hashes))
-	
+
 	for i := 0; i < len(hashes); i += batchSize {
 		end := i + batchSize
 		if end > len(hashes) {
 			end = len(hashes)
 		}
-		
+
 		batch := hashes[i:end]
-		
+
 		// Build IN clause with escaped hashes
 		hashList := make([]string, 0, len(batch))
 		for _, hash := range batch {
@@ -1572,15 +1540,15 @@ func (w *ClickHouseWriter) checkHashesBatch(ctx context.Context, tableName strin
 			escapedHash := strings.ReplaceAll(hash, "'", "''")
 			hashList = append(hashList, "'"+escapedHash+"'")
 		}
-		
-		query := fmt.Sprintf("SELECT DISTINCT record_hash FROM logs.%s WHERE record_hash IN (%s)", 
+
+		query := fmt.Sprintf("SELECT DISTINCT record_hash FROM logs.%s WHERE record_hash IN (%s)",
 			tableName, strings.Join(hashList, ","))
-		
+
 		rows, err := w.conn.Query(ctx, query)
 		if err != nil {
 			return nil, fmt.Errorf("failed to batch check hashes: %w", err)
 		}
-		
+
 		for rows.Next() {
 			var hash string
 			if err := rows.Scan(&hash); err != nil {
@@ -1591,7 +1559,7 @@ func (w *ClickHouseWriter) checkHashesBatch(ctx context.Context, tableName strin
 		}
 		rows.Close()
 	}
-	
+
 	return existingHashes, nil
 }
 
@@ -1600,14 +1568,14 @@ func mapToArrays(m map[string]string) ([]string, []string) {
 	if len(m) == 0 {
 		return []string{}, []string{}
 	}
-	
+
 	keys := make([]string, 0, len(m))
 	values := make([]string, 0, len(m))
-	
+
 	for k, v := range m {
 		keys = append(keys, k)
 		values = append(values, v)
 	}
-	
+
 	return keys, values
 }

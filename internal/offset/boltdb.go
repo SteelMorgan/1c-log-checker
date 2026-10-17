@@ -3,6 +3,7 @@ package offset
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -33,14 +34,14 @@ func NewBoltDBStore(dbPath string) (*BoltDBStore, error) {
 		// We can't automatically unlock it - user needs to stop the process manually
 		return nil, fmt.Errorf("failed to open boltdb (file may be locked by another process): %w", err)
 	}
-	
+
 	// Create buckets if not exists
 	err = db.Update(func(tx *bbolt.Tx) error {
 		if _, err := tx.CreateBucketIfNotExists([]byte(bucketName)); err != nil {
 			return err
 		}
 		if _, err := tx.CreateBucketIfNotExists([]byte(techlogBucketName)); err != nil {
-		return err
+			return err
 		}
 		if _, err := tx.CreateBucketIfNotExists([]byte(eventlogBucketName)); err != nil {
 			return err
@@ -51,43 +52,43 @@ func NewBoltDBStore(dbPath string) (*BoltDBStore, error) {
 		db.Close()
 		return nil, fmt.Errorf("failed to create buckets: %w", err)
 	}
-	
+
 	log.Info().
 		Str("db_path", dbPath).
 		Msg("BoltDB offset store initialized")
-	
+
 	return &BoltDBStore{db: db}, nil
 }
 
 // Get retrieves the offset for a given file
 func (s *BoltDBStore) Get(ctx context.Context, sourceType, filePath string) (uint64, error) {
 	var offset uint64
-	
+
 	err := s.db.View(func(tx *bbolt.Tx) error {
 		b := tx.Bucket([]byte(bucketName))
 		if b == nil {
 			return fmt.Errorf("bucket not found")
 		}
-		
+
 		key := makeKey(sourceType, filePath)
 		val := b.Get([]byte(key))
 		if val == nil {
 			offset = 0
 			return nil
 		}
-		
+
 		if len(val) < 8 {
 			return fmt.Errorf("invalid offset value")
 		}
-		
+
 		offset = binary.BigEndian.Uint64(val)
 		return nil
 	})
-	
+
 	if err != nil {
 		return 0, fmt.Errorf("failed to get offset: %w", err)
 	}
-	
+
 	return offset, nil
 }
 
@@ -98,24 +99,24 @@ func (s *BoltDBStore) Set(ctx context.Context, sourceType, filePath string, offs
 		if b == nil {
 			return fmt.Errorf("bucket not found")
 		}
-		
+
 		key := makeKey(sourceType, filePath)
 		val := make([]byte, 8)
 		binary.BigEndian.PutUint64(val, offset)
-		
+
 		return b.Put([]byte(key), val)
 	})
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to set offset: %w", err)
 	}
-	
+
 	log.Debug().
 		Str("source_type", sourceType).
 		Str("file_path", filePath).
 		Uint64("offset", offset).
 		Msg("Offset updated")
-	
+
 	return nil
 }
 
@@ -126,28 +127,28 @@ func (s *BoltDBStore) Delete(ctx context.Context, sourceType, filePath string) e
 		if b == nil {
 			return fmt.Errorf("bucket not found")
 		}
-		
+
 		key := makeKey(sourceType, filePath)
 		return b.Delete([]byte(key))
 	})
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to delete offset: %w", err)
 	}
-	
+
 	return nil
 }
 
 // List returns all stored offsets
 func (s *BoltDBStore) List(ctx context.Context) (map[string]uint64, error) {
 	result := make(map[string]uint64)
-	
+
 	err := s.db.View(func(tx *bbolt.Tx) error {
 		b := tx.Bucket([]byte(bucketName))
 		if b == nil {
 			return fmt.Errorf("bucket not found")
 		}
-		
+
 		return b.ForEach(func(k, v []byte) error {
 			if len(v) >= 8 {
 				offset := binary.BigEndian.Uint64(v)
@@ -156,11 +157,11 @@ func (s *BoltDBStore) List(ctx context.Context) (map[string]uint64, error) {
 			return nil
 		})
 	})
-	
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to list offsets: %w", err)
 	}
-	
+
 	return result, nil
 }
 
@@ -186,29 +187,29 @@ type TechLogOffset struct {
 // GetTechLogOffset retrieves the offset for a tech log file
 func (s *BoltDBStore) GetTechLogOffset(ctx context.Context, filePath string) (*TechLogOffset, error) {
 	var offset *TechLogOffset
-	
+
 	err := s.db.View(func(tx *bbolt.Tx) error {
 		b := tx.Bucket([]byte(techlogBucketName))
 		if b == nil {
 			return fmt.Errorf("techlog bucket not found")
 		}
-		
+
 		val := b.Get([]byte(filePath))
 		if val == nil {
 			offset = nil // No offset stored
 			return nil
 		}
-		
+
 		// Deserialize offset
 		var err error
 		offset, err = deserializeTechLogOffset(val)
 		return err
 	})
-	
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to get techlog offset: %w", err)
 	}
-	
+
 	return offset, nil
 }
 
@@ -217,33 +218,33 @@ func (s *BoltDBStore) SaveTechLogOffset(ctx context.Context, offset *TechLogOffs
 	if offset == nil {
 		return fmt.Errorf("offset cannot be nil")
 	}
-	
+
 	err := s.db.Update(func(tx *bbolt.Tx) error {
 		b := tx.Bucket([]byte(techlogBucketName))
 		if b == nil {
 			return fmt.Errorf("techlog bucket not found")
 		}
-		
+
 		// Serialize offset
 		val, err := serializeTechLogOffset(offset)
 		if err != nil {
 			return err
 		}
-		
+
 		return b.Put([]byte(offset.FilePath), val)
 	})
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to save techlog offset: %w", err)
 	}
-	
+
 	log.Debug().
 		Str("file_path", offset.FilePath).
 		Int64("offset_bytes", offset.OffsetBytes).
 		Int64("last_line", offset.LastLine).
 		Time("last_timestamp", offset.LastTimestamp).
 		Msg("TechLog offset updated")
-	
+
 	return nil
 }
 
@@ -253,28 +254,28 @@ func serializeTechLogOffset(offset *TechLogOffset) ([]byte, error) {
 	// Calculate size: 8 (OffsetBytes) + 8 (LastLine) + 8 (Timestamp) + 4 (FilePath length) + len(FilePath)
 	filePathBytes := []byte(offset.FilePath)
 	buf := make([]byte, 8+8+8+4+len(filePathBytes))
-	
+
 	pos := 0
-	
+
 	// OffsetBytes (int64 = 8 bytes)
 	binary.BigEndian.PutUint64(buf[pos:], uint64(offset.OffsetBytes))
 	pos += 8
-	
+
 	// LastLine (int64 = 8 bytes)
 	binary.BigEndian.PutUint64(buf[pos:], uint64(offset.LastLine))
 	pos += 8
-	
+
 	// LastTimestamp (UnixNano as int64 = 8 bytes)
 	binary.BigEndian.PutUint64(buf[pos:], uint64(offset.LastTimestamp.UnixNano()))
 	pos += 8
-	
+
 	// FilePath length (uint32 = 4 bytes)
 	binary.BigEndian.PutUint32(buf[pos:], uint32(len(filePathBytes)))
 	pos += 4
-	
+
 	// FilePath
 	copy(buf[pos:], filePathBytes)
-	
+
 	return buf, nil
 }
 
@@ -283,32 +284,32 @@ func deserializeTechLogOffset(data []byte) (*TechLogOffset, error) {
 	if len(data) < 28 { // Minimum: 8+8+8+4 = 28 bytes
 		return nil, fmt.Errorf("invalid offset data: too short")
 	}
-	
+
 	pos := 0
-	
+
 	// OffsetBytes
 	offsetBytes := int64(binary.BigEndian.Uint64(data[pos:]))
 	pos += 8
-	
+
 	// LastLine
 	lastLine := int64(binary.BigEndian.Uint64(data[pos:]))
 	pos += 8
-	
+
 	// LastTimestamp
 	timestampNano := int64(binary.BigEndian.Uint64(data[pos:]))
 	pos += 8
-	
+
 	// FilePath length
 	filePathLen := binary.BigEndian.Uint32(data[pos:])
 	pos += 4
-	
+
 	if len(data) < pos+int(filePathLen) {
 		return nil, fmt.Errorf("invalid offset data: filepath length mismatch")
 	}
-	
+
 	// FilePath
 	filePath := string(data[pos : pos+int(filePathLen)])
-	
+
 	return &TechLogOffset{
 		FilePath:      filePath,
 		OffsetBytes:   offsetBytes,
@@ -323,34 +324,39 @@ type EventLogOffset struct {
 	OffsetBytes   int64
 	LastTimestamp time.Time
 	RecordsParsed int64
+	// Generation меняется только при подтверждённой ротации/усечении.
+	InitialTail    bool
+	Generation     uint64
+	CheckpointHash string
+	FileSize       int64
 }
 
 // GetEventLogOffset retrieves the offset for an event log file
 func (s *BoltDBStore) GetEventLogOffset(ctx context.Context, filePath string) (*EventLogOffset, error) {
 	var offset *EventLogOffset
-	
+
 	err := s.db.View(func(tx *bbolt.Tx) error {
 		b := tx.Bucket([]byte(eventlogBucketName))
 		if b == nil {
 			return fmt.Errorf("eventlog bucket not found")
 		}
-		
+
 		val := b.Get([]byte(filePath))
 		if val == nil {
 			offset = nil // No offset stored
 			return nil
 		}
-		
+
 		// Deserialize offset
 		var err error
 		offset, err = deserializeEventLogOffset(val)
 		return err
 	})
-	
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to get eventlog offset: %w", err)
 	}
-	
+
 	return offset, nil
 }
 
@@ -359,33 +365,44 @@ func (s *BoltDBStore) SaveEventLogOffset(ctx context.Context, offset *EventLogOf
 	if offset == nil {
 		return fmt.Errorf("offset cannot be nil")
 	}
-	
+
 	err := s.db.Update(func(tx *bbolt.Tx) error {
 		b := tx.Bucket([]byte(eventlogBucketName))
 		if b == nil {
 			return fmt.Errorf("eventlog bucket not found")
 		}
-		
+
+		if raw := b.Get([]byte(offset.FilePath)); raw != nil {
+			previous, err := deserializeEventLogOffset(raw)
+			if err != nil {
+				return err
+			}
+			// Проверка и запись выполняются в одной транзакции: запоздалый
+			// worker не может откатить checkpoint или вернуть старое поколение.
+			if offset.Generation < previous.Generation || (offset.Generation == previous.Generation && offset.OffsetBytes < previous.OffsetBytes) {
+				return nil
+			}
+		}
 		// Serialize offset
 		val, err := serializeEventLogOffset(offset)
 		if err != nil {
 			return err
 		}
-		
+
 		return b.Put([]byte(offset.FilePath), val)
 	})
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to save eventlog offset: %w", err)
 	}
-	
+
 	log.Debug().
 		Str("file_path", offset.FilePath).
 		Int64("offset_bytes", offset.OffsetBytes).
 		Int64("records_parsed", offset.RecordsParsed).
 		Time("last_timestamp", offset.LastTimestamp).
 		Msg("EventLog offset updated")
-	
+
 	return nil
 }
 
@@ -397,26 +414,40 @@ func serializeEventLogOffset(offset *EventLogOffset) ([]byte, error) {
 	bufSize := 8 + 8 + 8 + 4 + len(filePathBytes)
 	buf := make([]byte, bufSize)
 	pos := 0
-	
+
 	// OffsetBytes (int64 = 8 bytes)
 	binary.BigEndian.PutUint64(buf[pos:], uint64(offset.OffsetBytes))
 	pos += 8
-	
+
 	// RecordsParsed (int64 = 8 bytes)
 	binary.BigEndian.PutUint64(buf[pos:], uint64(offset.RecordsParsed))
 	pos += 8
-	
+
 	// LastTimestamp (int64 UnixNano = 8 bytes)
 	binary.BigEndian.PutUint64(buf[pos:], uint64(offset.LastTimestamp.UnixNano()))
 	pos += 8
-	
+
 	// FilePath length (uint32 = 4 bytes)
 	binary.BigEndian.PutUint32(buf[pos:], uint32(len(filePathBytes)))
 	pos += 4
-	
+
 	// FilePath
 	copy(buf[pos:], filePathBytes)
-	
+
+	metadata, err := json.Marshal(struct {
+		Generation     uint64
+		CheckpointHash string
+		FileSize       int64
+	}{offset.Generation, offset.CheckpointHash, offset.FileSize})
+	if err != nil {
+		return nil, err
+	}
+	flag := byte(0)
+	if offset.InitialTail {
+		flag = 1
+	}
+	buf = append(buf, flag)
+	buf = append(buf, metadata...)
 	return buf, nil
 }
 
@@ -425,38 +456,49 @@ func deserializeEventLogOffset(data []byte) (*EventLogOffset, error) {
 	if len(data) < 28 { // Minimum: 8+8+8+4 = 28 bytes
 		return nil, fmt.Errorf("invalid offset data: too short")
 	}
-	
+
 	pos := 0
-	
+
 	// OffsetBytes
 	offsetBytes := int64(binary.BigEndian.Uint64(data[pos:]))
 	pos += 8
-	
+
 	// RecordsParsed
 	recordsParsed := int64(binary.BigEndian.Uint64(data[pos:]))
 	pos += 8
-	
+
 	// LastTimestamp
 	timestampNano := int64(binary.BigEndian.Uint64(data[pos:]))
 	pos += 8
 	lastTimestamp := time.Unix(0, timestampNano)
-	
+
 	// FilePath length
 	filePathLen := int(binary.BigEndian.Uint32(data[pos:]))
 	pos += 4
-	
+
 	if len(data) < pos+filePathLen {
 		return nil, fmt.Errorf("invalid offset data: filepath length mismatch")
 	}
-	
+
 	// FilePath
 	filePath := string(data[pos : pos+filePathLen])
-	
-	return &EventLogOffset{
+
+	offset := &EventLogOffset{
 		FilePath:      filePath,
 		OffsetBytes:   offsetBytes,
 		LastTimestamp: lastTimestamp,
 		RecordsParsed: recordsParsed,
-	}, nil
+	}
+	// Старые записи заканчиваются сразу после FilePath.
+	tail := data[pos+filePathLen:]
+	if len(tail) > 0 && (tail[0] == 0 || tail[0] == 1) {
+		offset.InitialTail = tail[0] == 1
+		tail = tail[1:]
+	}
+	if len(tail) > 0 {
+		if err := json.Unmarshal(tail, offset); err != nil {
+			return nil, fmt.Errorf("invalid eventlog checkpoint metadata: %w", err)
+		}
+	}
+	return offset, nil
 }
-

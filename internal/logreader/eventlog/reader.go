@@ -2,6 +2,7 @@ package eventlog
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"os"
@@ -35,21 +36,27 @@ type EventLogOffsetStore interface {
 // Reader reads 1C Event Log files (.lgf/.lgp)
 // Uses streaming approach to avoid loading all records into memory
 type Reader struct {
-	basePath         string
-	lgfPath          string
-	lgpFiles         []string
-	clusterGUID      string
-	clusterName      string
-	infobaseGUID     string
-	infobaseName     string
-	searchDirs       []string
-	lgfReader        *LgfReader           // For resolving user_id, computer_id, etc.
-	maxWorkers       int                  // Max parallel workers for .lgp file processing
-	workerLimiter    *workerlimit.Limiter // Global limiter across all readers/tailers (optional)
-	metricsCallback  FileMetricsCallback  // Optional callback for file metrics
-	progressCallback FileProgressCallback // Optional callback for file reading progress
-	offsetStore      EventLogOffsetStore  // Optional offset store for resuming file reading
-	filesProcessed   atomic.Int32         // Counter for processed files (thread-safe)
+	// Совместимость с существующей tail-настройкой; checkpoint теперь безопасен для всех источников.
+	UseSafeCheckpoints bool
+	basePath           string
+	rescanInterval     time.Duration
+	nameMu             sync.Mutex
+	fileIdentities     sync.Map
+	cancel             context.CancelFunc
+	lgfPath            string
+	lgpFiles           []string
+	clusterGUID        string
+	clusterName        string
+	infobaseGUID       string
+	infobaseName       string
+	searchDirs         []string
+	lgfReader          *LgfReader           // For resolving user_id, computer_id, etc.
+	maxWorkers         int                  // Max parallel workers for .lgp file processing
+	workerLimiter      *workerlimit.Limiter // Global limiter across all readers/tailers (optional)
+	metricsCallback    FileMetricsCallback  // Optional callback for file metrics
+	progressCallback   FileProgressCallback // Optional callback for file reading progress
+	offsetStore        EventLogOffsetStore  // Optional offset store for resuming file reading
+	filesProcessed     atomic.Int32         // Counter for processed files (thread-safe)
 
 	// Streaming state
 	currentFileIdx int                         // Current file being read
@@ -102,13 +109,15 @@ func NewReaderWithMetricsAndProgress(basePath, clusterGUID, infobaseGUID, cluste
 		progressCallback: progressCallback,
 		offsetStore:      offsetStore,
 		currentFileIdx:   0,
-		recordChan:       make(chan *domain.EventLogRecord, 1000), // Buffered channel for records
+		recordChan:       make(chan *domain.EventLogRecord), // Buffered channel for records
 		errChan:          make(chan error, 1),
 		doneChan:         make(chan struct{}),
 	}, nil
 }
 
 func (r *Reader) resolveNames() (clusterName, infobaseName string) {
+	r.nameMu.Lock()
+	defer r.nameMu.Unlock()
 	if r.clusterGUID == "" || r.infobaseGUID == "" || len(r.searchDirs) == 0 {
 		return r.clusterName, r.infobaseName
 	}
@@ -136,6 +145,7 @@ func (r *Reader) resolveNames() (clusterName, infobaseName string) {
 // Open opens the event log and prepares for reading
 // Uses streaming approach - files are read on-demand, not loaded into memory
 func (r *Reader) Open(ctx context.Context) error {
+	ctx, r.cancel = context.WithCancel(ctx)
 	r.ctx = ctx
 
 	// Find all .lgp files in the directory
@@ -167,168 +177,83 @@ func (r *Reader) streamFiles(ctx context.Context) {
 	defer close(r.recordChan)
 	defer close(r.doneChan)
 
-	if len(r.lgpFiles) == 0 {
-		return
-	}
-
-	// Create worker pool for parallel file processing
-	fileChan := make(chan string, len(r.lgpFiles))
+	fileChan := make(chan string, r.maxWorkers)
 	var wg sync.WaitGroup
-
-	// Start workers
+	var mu sync.Mutex
+	scheduled := make(map[string]bool)
+	// Снимок делается до отправки задания: дописывание во время чтения
+	// должно остаться видимым следующему сканированию.
+	observed := make(map[string]os.FileInfo)
+	defer func() { close(fileChan); wg.Wait() }()
 	for w := 0; w < r.maxWorkers; w++ {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
-			for filePath := range fileChan {
-				// Check context cancellation
-				select {
-				case <-ctx.Done():
+			for path := range fileChan {
+				if ctx.Err() != nil {
 					return
-				default:
 				}
-
-				acquired := false
-				if r.workerLimiter != nil {
-					if err := r.workerLimiter.Acquire(ctx); err != nil {
-						log.Warn().Err(err).Msg("Worker limiter cancelled, stopping worker")
-						return
-					}
-					acquired = true
+				if err := r.workerLimiter.Acquire(ctx); err != nil {
+					return
 				}
-
-				r.processFile(ctx, filePath, workerID)
-
-				if acquired {
-					r.workerLimiter.Release()
-				}
+				r.processFile(ctx, path, workerID)
+				r.workerLimiter.Release()
+				mu.Lock()
+				delete(scheduled, path)
+				mu.Unlock()
 			}
 		}(w)
 	}
-
-	// Track files and their last seen size.
-	// We must re-queue files that have grown to support "tail" behavior for the current .lgp file.
-	processedFiles := make(map[string]int64)
-
-	// Send initial files to workers
-	for _, filePath := range r.lgpFiles {
-		select {
-		case <-ctx.Done():
-			close(fileChan)
-			wg.Wait()
-			return
-		case fileChan <- filePath:
-			// Best-effort stat; size=0 if stat fails.
-			var size int64
-			if stat, err := os.Stat(filePath); err == nil {
-				size = stat.Size()
-			}
-			processedFiles[filePath] = size
+	scan := func() bool {
+		paths, err := filepath.Glob(filepath.Join(r.basePath, "*.lgp"))
+		if err != nil {
+			log.Warn().Err(err).Msg("Failed to scan LGP files")
+			return true
 		}
+		sort.Strings(paths)
+		for _, path := range paths {
+			info, err := os.Stat(path)
+			if err != nil || !info.Mode().IsRegular() {
+				continue
+			}
+			previous, seen := observed[path]
+			if seen && os.SameFile(previous, info) && previous.Size() == info.Size() && previous.ModTime().Equal(info.ModTime()) {
+				continue
+			}
+			mu.Lock()
+			busy := scheduled[path]
+			if !busy {
+				scheduled[path] = true
+			}
+			mu.Unlock()
+			if busy {
+				continue
+			}
+			observed[path] = info
+			select {
+			case <-ctx.Done():
+				return false
+			case fileChan <- path:
+			}
+		}
+		return true
 	}
-
-	// Periodically rescan directory for new files (every 30 seconds)
-	rescanTicker := time.NewTicker(30 * time.Second)
-	defer rescanTicker.Stop()
-
-	// Wait for all initial workers to finish, then continue monitoring for new files
-	initialDone := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(initialDone)
-	}()
-
-	// Monitor for new files
+	if !scan() {
+		return
+	}
+	interval := r.rescanInterval
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			close(fileChan)
-			wg.Wait()
 			return
-		case <-initialDone:
-			// Initial files processed, continue monitoring
-			initialDone = nil // Prevent re-entering this case
-		case <-rescanTicker.C:
-			// Rescan directory for new files and grown files (tailing)
-			lgpPattern := filepath.Join(r.basePath, "*.lgp")
-			matches, err := filepath.Glob(lgpPattern)
-			if err != nil {
-				log.Warn().Err(err).Str("path", r.basePath).Msg("Failed to rescan directory for new files")
-				continue
-			}
-
-			// Sort files by name
-			sort.Strings(matches)
-
-			// Find new files and grown files
-			filesToProcess := []string{}
-			for _, filePath := range matches {
-				stat, statErr := os.Stat(filePath)
-				if statErr != nil {
-					log.Debug().Err(statErr).Str("file", filePath).Msg("Failed to stat .lgp during rescan")
-					continue
-				}
-
-				currentSize := stat.Size()
-				lastSize, seen := processedFiles[filePath]
-
-				// New file (never seen)
-				if !seen {
-					processedFiles[filePath] = currentSize
-					filesToProcess = append(filesToProcess, filePath)
-					continue
-				}
-
-				// Existing file grew -> re-queue to read appended data
-				if currentSize > lastSize {
-					// Update last seen size immediately to avoid repeated enqueue on subsequent scans
-					processedFiles[filePath] = currentSize
-
-					log.Debug().
-						Str("file", filepath.Base(filePath)).
-						Int64("last_size", lastSize).
-						Int64("current_size", currentSize).
-						Msg("LGP file grew, scheduling re-processing to read appended records")
-
-					// If we have offsets, avoid enqueue if offset already caught up (race-safe best effort)
-					if r.offsetStore != nil {
-						if off, err := r.offsetStore.GetEventLogOffset(ctx, filePath); err == nil && off != nil {
-							if off.OffsetBytes >= currentSize {
-								continue
-							}
-						}
-					}
-
-					filesToProcess = append(filesToProcess, filePath)
-					continue
-				}
-
-				// Existing file shrank -> likely rotation/truncation, re-queue and let processFile decide from where to start
-				if currentSize < lastSize {
-					processedFiles[filePath] = currentSize
-					log.Info().
-						Str("file", filepath.Base(filePath)).
-						Int64("last_size", lastSize).
-						Int64("current_size", currentSize).
-						Msg("LGP file size decreased (rotation/truncation), scheduling re-processing")
-					filesToProcess = append(filesToProcess, filePath)
-				}
-			}
-
-			if len(filesToProcess) > 0 {
-				log.Info().
-					Str("base_path", r.basePath).
-					Int("files", len(filesToProcess)).
-					Msg("Found new or grown lgp files, adding to processing queue")
-
-				// Send files to workers
-				for _, filePath := range filesToProcess {
-					select {
-					case <-ctx.Done():
-						return
-					case fileChan <- filePath:
-					}
-				}
+		case <-ticker.C:
+			if !scan() {
+				return
 			}
 		}
 	}
@@ -352,28 +277,56 @@ func (r *Reader) processFile(ctx context.Context, filePath string, workerID int)
 	// This ensures the counter is accurate during regular metric updates
 	r.filesProcessed.Add(1)
 
-	// Check for saved offset
-	var startOffset int64 = 0
-	var recordsParsedFromOffset int64 = 0
+	stat, err := file.Stat()
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to stat opened LGP")
+		return
+	}
+	var startOffset, recordsParsedFromOffset int64
+	var generation uint64
+	var initialTail bool
+	var legacyCheckpoint bool
+	previousInfo, seenFile := r.fileIdentities.LoadOrStore(filePath, stat)
+	replaced := seenFile && !os.SameFile(previousInfo.(os.FileInfo), stat)
+	r.fileIdentities.Store(filePath, stat)
 	if r.offsetStore != nil {
-		if storedOffset, err := r.offsetStore.GetEventLogOffset(ctx, filePath); err == nil && storedOffset != nil {
-			stat, err := os.Stat(filePath)
-			if err == nil && storedOffset.OffsetBytes <= stat.Size() {
-				startOffset = storedOffset.OffsetBytes
-				recordsParsedFromOffset = storedOffset.RecordsParsed
-				log.Info().
-					Str("file", filepath.Base(filePath)).
-					Int64("offset_bytes", startOffset).
-					Int64("records_parsed", recordsParsedFromOffset).
-					Time("last_timestamp", storedOffset.LastTimestamp).
-					Msg("Resuming from saved offset")
+		stored, err := r.offsetStore.GetEventLogOffset(ctx, filePath)
+		if err != nil {
+			log.Warn().Err(err).Msg("Failed to load LGP checkpoint")
+			return
+		}
+		if stored != nil {
+			generation = stored.Generation
+			initialTail = stored.InitialTail
+			valid := !replaced && stored.OffsetBytes <= stat.Size() && stored.FileSize <= stat.Size()
+			if valid && stored.CheckpointHash != "" {
+				hash, err := checkpointHash(file, stored.OffsetBytes)
+				if err != nil {
+					log.Warn().Err(err).Msg("Failed to validate LGP checkpoint")
+					return
+				}
+				valid = hash == stored.CheckpointHash
+			}
+			if valid {
+				startOffset, recordsParsedFromOffset = stored.OffsetBytes, stored.RecordsParsed
+				legacyCheckpoint = startOffset > 0 && stored.CheckpointHash == ""
+				log.Info().Str("file", filePath).Int64("offset_bytes", startOffset).Msg("Resuming from saved offset")
 			} else {
-				log.Debug().
-					Str("file", filepath.Base(filePath)).
-					Int64("saved_offset", storedOffset.OffsetBytes).
-					Msg("File size changed or stat failed, starting from beginning")
+				generation++
+				initialTail = false
+				log.Info().Str("file", filePath).Uint64("generation", generation).Msg("LGP rotated or truncated, resetting checkpoint")
 			}
 		}
+	}
+
+	if initialTail || legacyCheckpoint {
+		next, found, err := findRecordStart(ctx, file, startOffset)
+		if err != nil {
+			log.Warn().Err(err).Msg("Failed to align initial LGP tail")
+			return
+		}
+		startOffset = next
+		initialTail = !found
 	}
 
 	// Seek to start offset if exists
@@ -399,32 +352,6 @@ func (r *Reader) processFile(ctx context.Context, filePath string, workerID int)
 	parsingStartTime := time.Now()
 	parser := NewLgpParser(r.clusterGUID, r.infobaseGUID, resolvedClusterName, resolvedInfobaseName, r.lgfReader)
 
-	// Count records as they are streamed (using atomic counter to avoid race conditions)
-	var recordsCount atomic.Uint64
-	var lastRecordTimestamp atomic.Value // Store last record timestamp for final offset
-
-	// Create a wrapper channel to count records before forwarding
-	countChan := make(chan *domain.EventLogRecord, 1000)
-	doneCounting := make(chan struct{})
-
-	// Start goroutine to count and forward records
-	go func() {
-		defer close(doneCounting)
-		for record := range countChan {
-			recordsCount.Add(1)
-			lastRecordTimestamp.Store(record.EventTime) // Store timestamp for final offset
-			record.ClusterName = resolvedClusterName
-			record.InfobaseName = resolvedInfobaseName
-
-			select {
-			case <-ctx.Done():
-				return
-			case r.recordChan <- record:
-				// Record forwarded
-			}
-		}
-	}()
-
 	// Get file size for progress tracking
 	var fileSizeBytes uint64
 	if stat, err := os.Stat(filePath); err == nil {
@@ -444,10 +371,18 @@ func (r *Reader) processFile(ctx context.Context, filePath string, workerID int)
 
 			offset := &offset.EventLogOffset{
 				FilePath:      filePath,
+				Generation:    generation,
+				InitialTail:   initialTail,
+				FileSize:      stat.Size(),
 				OffsetBytes:   currentOffset,
 				LastTimestamp: lastTimestamp,
 				RecordsParsed: callbackRecordsCount + recordsParsedFromOffset,
 			}
+			hash, hashErr := checkpointHash(file, currentOffset)
+			if hashErr != nil {
+				return hashErr
+			}
+			offset.CheckpointHash = hash
 			if err := r.offsetStore.SaveEventLogOffset(ctx, offset); err != nil {
 				return err
 			}
@@ -492,23 +427,23 @@ func (r *Reader) processFile(ctx context.Context, filePath string, workerID int)
 				}
 
 				// Use atomic recordsCount to get current value (from reader, not callback parameter)
-				currentRecordsCount := recordsCount.Load()
+				currentRecordsCount := uint64(parser.recordsParsed)
 				var recordsPerSecond float64
-					if elapsedTimeMs > 0 && currentRecordsCount > 0 {
-						recordsPerSecond = float64(currentRecordsCount) / (float64(elapsedTimeMs) / 1000.0)
-					}
+				if elapsedTimeMs > 0 && currentRecordsCount > 0 {
+					recordsPerSecond = float64(currentRecordsCount) / (float64(elapsedTimeMs) / 1000.0)
+				}
 
-					metricsClusterName, metricsInfobaseName := resolvedClusterName, resolvedInfobaseName
-					metrics := &domain.ParserMetrics{
-						Timestamp:           currentTime,
-						ParserType:          "event_log",
-						ClusterGUID:         r.clusterGUID,
-						ClusterName:         metricsClusterName,
-						InfobaseGUID:        r.infobaseGUID,
-						InfobaseName:        metricsInfobaseName,
-						FilePath:            filePath,
-						FileName:            filepath.Base(filePath),
-						FilesProcessed:      uint32(r.filesProcessed.Load()),
+				metricsClusterName, metricsInfobaseName := resolvedClusterName, resolvedInfobaseName
+				metrics := &domain.ParserMetrics{
+					Timestamp:           currentTime,
+					ParserType:          "event_log",
+					ClusterGUID:         r.clusterGUID,
+					ClusterName:         metricsClusterName,
+					InfobaseGUID:        r.infobaseGUID,
+					InfobaseName:        metricsInfobaseName,
+					FilePath:            filePath,
+					FileName:            filepath.Base(filePath),
+					FilesProcessed:      uint32(r.filesProcessed.Load()),
 					RecordsParsed:       currentRecordsCount + uint64(recordsParsedFromOffset),
 					ParsingTimeMs:       elapsedTimeMs,
 					RecordsPerSecond:    recordsPerSecond,
@@ -535,16 +470,12 @@ func (r *Reader) processFile(ctx context.Context, filePath string, workerID int)
 
 	// Parse streamingly - records will be sent to counting channel
 	// Pass startOffset to parser so it knows if we're resuming
-	err = parser.ParseStream(ctx, file, countChan, offsetCallback, startOffset)
-	close(countChan) // Close counting channel to signal completion
-
-	// Wait for counting goroutine to finish
-	<-doneCounting
+	err = parser.ParseStream(ctx, file, r.recordChan, offsetCallback, startOffset)
 
 	parsingEndTime := time.Now()
 	recordParsingTime := parsingEndTime.Sub(parsingStartTime)
 
-	finalCount := recordsCount.Load()
+	finalCount := uint64(parser.recordsParsed)
 
 	readingEndTime := time.Now()
 	readingDuration := readingEndTime.Sub(fileOpenStartTime)
@@ -552,25 +483,26 @@ func (r *Reader) processFile(ctx context.Context, filePath string, workerID int)
 	// Save final offset if file was processed successfully (or partially)
 	if r.offsetStore != nil {
 		// Get current file position (even if there was an error, save progress)
-		currentPos, seekErr := file.Seek(0, io.SeekCurrent)
+		currentPos := parser.checkpoint
+		hash, seekErr := checkpointHash(file, currentPos)
 		if seekErr == nil {
 			var lastTimestamp time.Time
 			if finalCount > 0 {
 				// Get last record timestamp from stored value
-				if storedTimestamp := lastRecordTimestamp.Load(); storedTimestamp != nil {
-					lastTimestamp = storedTimestamp.(time.Time)
-				} else {
-					lastTimestamp = readingEndTime
-				}
+				lastTimestamp = parser.lastTimestamp
 			} else {
 				lastTimestamp = readingEndTime
 			}
 
 			finalOffset := &offset.EventLogOffset{
-				FilePath:      filePath,
-				OffsetBytes:   currentPos,
-				LastTimestamp: lastTimestamp,
-				RecordsParsed: int64(finalCount) + recordsParsedFromOffset,
+				Generation:     generation,
+				InitialTail:    initialTail,
+				CheckpointHash: hash,
+				FileSize:       stat.Size(),
+				FilePath:       filePath,
+				OffsetBytes:    currentPos,
+				LastTimestamp:  lastTimestamp,
+				RecordsParsed:  int64(finalCount) + recordsParsedFromOffset,
 			}
 			if saveErr := r.offsetStore.SaveEventLogOffset(ctx, finalOffset); saveErr != nil {
 				log.Warn().Err(saveErr).Str("file", filePath).Msg("Failed to save final offset")
@@ -725,10 +657,32 @@ func (r *Reader) Seek(ctx context.Context, recordIndex int64) error {
 
 // Close closes the reader
 func (r *Reader) Close() error {
+	if r.cancel != nil {
+		r.cancel()
+		<-r.doneChan
+	}
 	// Close current file if open
 	if r.currentFile != nil {
 		r.currentFile.Close()
 		r.currentFile = nil
 	}
 	return nil
+}
+
+// Хеш небольшого фрагмента перед checkpoint обнаруживает замену файла даже
+// после усечения и повторного роста за прежний offset; inode SSHFS нестабилен.
+func checkpointHash(file *os.File, position int64) (string, error) {
+	if position == 0 {
+		return "", nil
+	}
+	size := int64(64)
+	if position < size {
+		size = position
+	}
+	var data [64]byte
+	if _, err := file.ReadAt(data[:size], position-size); err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data[:size])
+	return fmt.Sprintf("%x", sum), nil
 }

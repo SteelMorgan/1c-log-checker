@@ -9,6 +9,9 @@ import (
 // EventLogRecord represents a single record from 1C Event Log (Журнал регистрации)
 // Fields match the structure shown in 1C Configurator UI
 type EventLogRecord struct {
+	// Строковые срезы могут удерживать всю исходную запись, включая невыбранные поля.
+	// Writer учитывает этот объём при ограничении памяти батча.
+	SourceBytes int `json:"-"`
 	// Основные поля (Primary View)
 	EventTime time.Time // Дата, время
 	EventDate time.Time // Дата (без времени)
@@ -20,9 +23,9 @@ type EventLogRecord struct {
 	InfobaseName string // Имя информационной базы (из cluster_map.yaml)
 
 	// Основная информация о событии
-	Level              string // Уровень (Information, Warning, Error, Note)
-	Event              string // Событие (внутренний код, например _$InfoBase$_.Update)
-	EventPresentation  string // Событие (представление, например "Данные. Изменение")
+	Level             string // Уровень (Information, Warning, Error, Note)
+	Event             string // Событие (внутренний код, например _$InfoBase$_.Update)
+	EventPresentation string // Событие (представление, например "Данные. Изменение")
 
 	// Пользователь и компьютер
 	UserName string    // Пользователь (имя)
@@ -64,4 +67,3 @@ type EventLogRecord struct {
 	// Дополнительные свойства
 	Properties map[string]string // Расширяемые свойства
 }
-
